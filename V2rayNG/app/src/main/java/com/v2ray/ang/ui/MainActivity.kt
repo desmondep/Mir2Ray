@@ -2,6 +2,8 @@ package com.v2ray.ang.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -22,6 +24,7 @@ import androidx.appcompat.widget.SearchView
 import androidx.core.content.ContextCompat
 import androidx.core.view.GravityCompat
 import androidx.core.view.isVisible
+import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.ItemTouchHelper
@@ -37,14 +40,23 @@ import com.v2ray.ang.extension.toastError
 import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MigrateManager
 import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.SpeedtestManager
 import com.v2ray.ang.helper.SimpleItemTouchHelperCallback
 import com.v2ray.ang.handler.V2RayServiceManager
+import com.v2ray.ang.util.HttpUtil
 import com.v2ray.ang.util.Utils
 import com.v2ray.ang.viewmodel.MainViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedListener {
     private val binding by lazy {
@@ -76,6 +88,14 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     }
     private var mItemTouchHelper: ItemTouchHelper? = null
     val mainViewModel: MainViewModel by viewModels()
+    private var connectPulseAnimator: ObjectAnimator? = null
+    private var scanlineAnimator: ObjectAnimator? = null
+    private var pingLoopJob: Job? = null
+    private var lastPingText: String? = null
+    private var pendingConnectAttempt = false
+
+    private val fixedSubscriptionUrl =
+        "https://raw.githubusercontent.com/miraali1372/mirsub/main/subscription.txt"
 
     // register activity result for requesting permission
     private val requestPermissionLauncher =
@@ -129,6 +149,25 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         setContentView(binding.root)
         title = getString(R.string.title_server)
         setSupportActionBar(binding.toolbar)
+
+        setupMinimalUiMode()
+        startScanlineEffect()
+
+        binding.btnGiveConfigs.setOnClickListener {
+            lifecycleScope.launch {
+                processGiveNewConfigs()
+            }
+        }
+
+        binding.btnOptimize.setOnClickListener {
+            lifecycleScope.launch {
+                processOptimizeConfigs()
+            }
+        }
+
+        binding.btnConnect.setOnClickListener {
+            toggleConnect()
+        }
 
         binding.fab.setOnClickListener {
             if (mainViewModel.isRunning.value == true) {
@@ -205,7 +244,11 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                 adapter.notifyDataSetChanged()
             }
         }
-        mainViewModel.updateTestResultAction.observe(this) { setTestState(it) }
+        mainViewModel.updateTestResultAction.observe(this) {
+            lastPingText = it
+            setTestState(it)
+            updateConnectionStateText(mainViewModel.isRunning.value == true)
+        }
         mainViewModel.isRunning.observe(this) { isRunning ->
             adapter.isRunning = isRunning
             if (isRunning) {
@@ -214,13 +257,29 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                 binding.fab.contentDescription = getString(R.string.action_stop_service)
                 setTestState(getString(R.string.connection_connected))
                 binding.layoutTest.isFocusable = true
+                binding.btnConnect.text = getString(R.string.neon_disconnect)
+                binding.pbConnect.isVisible = false
+                stopConnectPulse()
+                pendingConnectAttempt = false
+                if (mainViewModel.isRunning.value == true) {
+                    startPingLoop()
+                }
             } else {
                 binding.fab.setImageResource(R.drawable.ic_play_24dp)
                 binding.fab.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.color_fab_inactive))
                 binding.fab.contentDescription = getString(R.string.tasker_start_service)
                 setTestState(getString(R.string.connection_not_connected))
                 binding.layoutTest.isFocusable = false
+                binding.btnConnect.text = getString(R.string.neon_connect)
+                stopPingLoop()
+                if (pendingConnectAttempt) {
+                    updateProcessState(getString(R.string.neon_connect_failed))
+                    pendingConnectAttempt = false
+                    binding.pbConnect.isVisible = false
+                    stopConnectPulse()
+                }
             }
+            updateConnectionStateText(isRunning)
         }
         mainViewModel.startListenBroadcast()
         mainViewModel.initAssets(assets)
@@ -291,27 +350,19 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         super.onPause()
     }
 
+    override fun onDestroy() {
+        stopPingLoop()
+        stopConnectPulse()
+        scanlineAnimator?.cancel()
+        scanlineAnimator = null
+        super.onDestroy()
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.menu_main, menu)
+        return false
 
-        val searchItem = menu.findItem(R.id.search_view)
-        if (searchItem != null) {
-            val searchView = searchItem.actionView as SearchView
-            searchView.setOnQueryTextListener(object : SearchView.OnQueryTextListener {
-                override fun onQueryTextSubmit(query: String?): Boolean = false
-
-                override fun onQueryTextChange(newText: String?): Boolean {
-                    mainViewModel.filterConfig(newText.orEmpty())
-                    return false
-                }
-            })
-
-            searchView.setOnCloseListener {
-                mainViewModel.filterConfig("")
-                false
-            }
-        }
-        return super.onCreateOptionsMenu(menu)
+//        menuInflater.inflate(R.menu.menu_main, menu)
+//        return super.onCreateOptionsMenu(menu)
     }
 
     override fun onOptionsItemSelected(item: MenuItem) = when (item.itemId) {
@@ -611,6 +662,245 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                 mainViewModel.reloadServerList()
                 binding.pbWaiting.hide()
             }
+        }
+    }
+
+    private fun setupMinimalUiMode() {
+        binding.drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED)
+        binding.navView.isVisible = false
+        binding.tabGroup.isVisible = false
+        binding.recyclerView.isVisible = false
+        binding.layoutTest.isVisible = false
+        binding.fab.isVisible = false
+        binding.tvConnectionState.text = getString(R.string.neon_disconnected)
+        updateProcessState(getString(R.string.neon_idle))
+    }
+
+    private fun toggleConnect() {
+        if (mainViewModel.isRunning.value == true) {
+            pendingConnectAttempt = false
+            stopConnectPulse()
+            binding.pbConnect.isVisible = false
+            V2RayServiceManager.stopVService(this)
+            return
+        }
+
+        pendingConnectAttempt = true
+        binding.pbConnect.isVisible = true
+        startConnectPulse()
+        updateProcessState(getString(R.string.neon_connecting))
+
+        if ((MmkvManager.decodeSettingsString(AppConfig.PREF_MODE) ?: VPN) == VPN) {
+            val intent = VpnService.prepare(this)
+            if (intent == null) {
+                startV2Ray()
+            } else {
+                requestVpnPermission.launch(intent)
+            }
+        } else {
+            startV2Ray()
+        }
+    }
+
+    private suspend fun processGiveNewConfigs() {
+        binding.pbWaiting.show()
+        updateProcessState(getString(R.string.neon_fetching_configs))
+
+        val success = withContext(Dispatchers.IO) {
+            try {
+                val fetched = HttpUtil.getUrlContentWithUserAgent(fixedSubscriptionUrl, null)
+                val normalized = normalizeConfigRows(fetched)
+                if (normalized.isBlank()) {
+                    return@withContext false
+                }
+
+                MmkvManager.removeAllServer()
+                AngConfigManager.importBatchConfig(normalized, "", true)
+                mainViewModel.reloadServerList()
+
+                withContext(Dispatchers.Main) {
+                    updateProcessState(getString(R.string.neon_checking_configs))
+                }
+                mainViewModel.removeDuplicateServer()
+                mainViewModel.reloadServerList()
+
+                withContext(Dispatchers.Main) {
+                    updateProcessState(getString(R.string.neon_building_intelligent))
+                }
+                val removedCount = removeSlowAndInvalidServers()
+                mainViewModel.sortByTestResults()
+                mainViewModel.reloadServerList()
+
+                val key = AngConfigManager.createIntelligentSelection(
+                    this@MainActivity,
+                    mainViewModel.serversCache.map { it.guid },
+                    ""
+                )
+                if (!key.isNullOrBlank()) {
+                    MmkvManager.setSelectServer(key)
+                }
+                mainViewModel.reloadServerList()
+                key != null && removedCount >= 0
+            } catch (e: Exception) {
+                Log.e(AppConfig.TAG, "Failed in Give New Configs flow", e)
+                false
+            }
+        }
+
+        binding.pbWaiting.hide()
+        if (success) {
+            updateProcessState(getString(R.string.neon_ready_configs))
+        } else {
+            updateProcessState(getString(R.string.neon_failed_configs))
+            toastError(R.string.toast_failure)
+        }
+    }
+
+    private suspend fun processOptimizeConfigs() {
+        binding.pbWaiting.show()
+        updateProcessState(getString(R.string.neon_optimizing))
+
+        val success = withContext(Dispatchers.IO) {
+            try {
+                removePreviousIntelligentConfigs()
+                mainViewModel.reloadServerList()
+                removeSlowAndInvalidServers()
+                mainViewModel.sortByTestResults()
+                mainViewModel.reloadServerList()
+
+                val key = AngConfigManager.createIntelligentSelection(
+                    this@MainActivity,
+                    mainViewModel.serversCache.map { it.guid },
+                    ""
+                )
+                if (!key.isNullOrBlank()) {
+                    MmkvManager.setSelectServer(key)
+                }
+                mainViewModel.reloadServerList()
+                !key.isNullOrBlank()
+            } catch (e: Exception) {
+                Log.e(AppConfig.TAG, "Failed in Optimize flow", e)
+                false
+            }
+        }
+
+        binding.pbWaiting.hide()
+        if (success) {
+            updateProcessState(getString(R.string.neon_optimized_ready))
+        } else {
+            updateProcessState(getString(R.string.neon_failed_configs))
+            toastError(R.string.toast_failure)
+        }
+    }
+
+    private suspend fun removeSlowAndInvalidServers(): Int {
+        mainViewModel.reloadServerList()
+        val candidates = mainViewModel.serversCache
+            .filter { it.profile.configType != EConfigType.CUSTOM }
+            .toList()
+
+        val removeList = mutableListOf<String>()
+        val limiter = Semaphore(24)
+        coroutineScope {
+            candidates.map { item ->
+                async(Dispatchers.IO) {
+                    limiter.withPermit {
+                        val host = item.profile.server
+                        val port = item.profile.serverPort?.toIntOrNull()
+                        val delay = if (host.isNullOrBlank() || port == null) {
+                            -1L
+                        } else {
+                            SpeedtestManager.tcping(host, port)
+                        }
+                        MmkvManager.encodeServerTestDelayMillis(item.guid, delay)
+                        if (delay < 0L || delay > 400L) {
+                            synchronized(removeList) {
+                                removeList.add(item.guid)
+                            }
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+
+        removeList.forEach { MmkvManager.removeServer(it) }
+        return removeList.size
+    }
+
+    private fun removePreviousIntelligentConfigs() {
+        val marker = getString(R.string.intelligent_selection)
+        val allGuids = MmkvManager.decodeServerList().toList()
+        allGuids.forEach { guid ->
+            val cfg = MmkvManager.decodeServerConfig(guid) ?: return@forEach
+            if (cfg.configType == EConfigType.CUSTOM && cfg.remarks.contains(marker)) {
+                MmkvManager.removeServer(guid)
+            }
+        }
+    }
+
+    private fun normalizeConfigRows(content: String): String {
+        if (content.isBlank()) {
+            return ""
+        }
+        val pattern = Regex("(vmess|vless|trojan|ss|socks|wireguard|hysteria2|hy2)://[^\\s]+")
+        val links = pattern.findAll(content).map { it.value.trim() }.toList()
+        return if (links.isEmpty()) content else links.joinToString("\n")
+    }
+
+    private fun startPingLoop() {
+        stopPingLoop()
+        pingLoopJob = lifecycleScope.launch {
+            while (isActive && mainViewModel.isRunning.value == true) {
+                mainViewModel.testCurrentServerRealPing()
+                delay(10_000)
+            }
+        }
+    }
+
+    private fun stopPingLoop() {
+        pingLoopJob?.cancel()
+        pingLoopJob = null
+    }
+
+    private fun updateProcessState(message: String) {
+        binding.tvProcessState.text = message
+    }
+
+    private fun updateConnectionStateText(isConnected: Boolean) {
+        val pingText = lastPingText?.takeIf { it.isNotBlank() } ?: getString(R.string.neon_ping_unknown)
+        binding.tvConnectionState.text = if (isConnected) {
+            getString(R.string.neon_connected_with_ping, pingText)
+        } else {
+            getString(R.string.neon_disconnected)
+        }
+    }
+
+    private fun startConnectPulse() {
+        stopConnectPulse()
+        connectPulseAnimator = ObjectAnimator.ofPropertyValuesHolder(
+            binding.btnConnect,
+            PropertyValuesHolder.ofFloat("scaleX", 1f, 1.04f, 1f),
+            PropertyValuesHolder.ofFloat("scaleY", 1f, 1.04f, 1f)
+        ).apply {
+            duration = 900
+            repeatCount = ObjectAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopConnectPulse() {
+        connectPulseAnimator?.cancel()
+        connectPulseAnimator = null
+        binding.btnConnect.scaleX = 1f
+        binding.btnConnect.scaleY = 1f
+    }
+
+    private fun startScanlineEffect() {
+        scanlineAnimator = ObjectAnimator.ofFloat(binding.scanlineOverlay, "translationY", -120f, 120f).apply {
+            duration = 2200
+            repeatCount = ObjectAnimator.INFINITE
+            repeatMode = ObjectAnimator.RESTART
+            start()
         }
     }
 

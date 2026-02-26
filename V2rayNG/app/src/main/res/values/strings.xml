@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name" translatable="false">v2rayNG</string>
+    <string name="app_name" translatable="false">Mir2Ray</string>
     <string name="app_widget_name">Switch</string>
     <string name="app_tile_name">Switch</string>
     <string name="app_tile_first_use">First use of this feature, please use the app to add server</string>
@@ -278,6 +278,25 @@
     <string name="sub_setting_pre_profile">Previous proxy configuration remarks</string>
     <string name="sub_setting_next_profile">Next proxy configuration remarks</string>
     <string name="sub_setting_pre_profile_tip">The configuration remarks exists and is unique</string>
+
+    <string name="neon_give_new_configs">Give New Configs</string>
+    <string name="neon_optimize">Optimize</string>
+    <string name="neon_connect">Connect</string>
+    <string name="neon_brand_title" translatable="false">Mir2Ray</string>
+    <string name="neon_disconnect">Disconnect</string>
+    <string name="neon_idle">Idle</string>
+    <string name="neon_connecting">Connecting…</string>
+    <string name="neon_connect_failed">Connection failed</string>
+    <string name="neon_fetching_configs">Getting new configs…</string>
+    <string name="neon_checking_configs">Checking configs…</string>
+    <string name="neon_building_intelligent">Building intelligent config…</string>
+    <string name="neon_ready_configs">New intelligent config is ready</string>
+    <string name="neon_failed_configs">Operation failed, try again</string>
+    <string name="neon_optimizing">Re-optimizing configs…</string>
+    <string name="neon_optimized_ready">Optimized intelligent config is ready</string>
+    <string name="neon_disconnected">Disconnected</string>
+    <string name="neon_ping_unknown">unknown</string>
+    <string name="neon_connected_with_ping">Connected • Ping: %1$s</string>
     <string name="title_sub_update">Update current group subscription</string>
     <string name="title_ping_all_server">Tcping current group configuration</string>
     <string name="title_real_ping_all_server">Real delay current group configuration</string>

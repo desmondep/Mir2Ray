@@ -1,0 +1,26 @@
+# 1) Login to GitHub CLI (once)
+gh auth login
+
+# 2) Go to project root
+cd /workspaces/v2rayNG
+
+# 3) Create repo (if not exists)
+gh repo create desmondep/Mir2Ray --public --source=. --remote=origin
+
+# 4) Ensure remote URL
+git remote set-url origin https://github.com/desmondep/Mir2Ray.git
+
+# 5) Push branch
+git push -u origin v1_10_32
+
+# 6) Build APK (requires Android SDK configured)
+cd /workspaces/v2rayNG/V2rayNG
+./gradlew :app:assembleRelease
+
+# 7) Create GitHub release with APK
+gh release create mir2ray-v1.10.32 \
+  /workspaces/v2rayNG/V2rayNG/app/build/outputs/apk/release/app-release.apk \
+  --repo desmondep/Mir2Ray \
+  --target v1_10_32 \
+  --title "Mir2Ray v1.10.32" \
+  --notes "Initial Mir2Ray release"

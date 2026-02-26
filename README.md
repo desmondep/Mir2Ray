@@ -1,4 +1,4 @@
-# v2rayNG
+# Mir2Ray
 
 A V2Ray client for Android, support [Xray core](https://github.com/XTLS/Xray-core) and [v2fly core](https://github.com/v2fly/v2ray-core)
 
@@ -8,6 +8,14 @@ A V2Ray client for Android, support [Xray core](https://github.com/XTLS/Xray-cor
 [![CodeFactor](https://www.codefactor.io/repository/github/2dust/v2rayng/badge)](https://www.codefactor.io/repository/github/2dust/v2rayng)
 [![GitHub Releases](https://img.shields.io/github/downloads/2dust/v2rayNG/latest/total?logo=github)](https://github.com/2dust/v2rayNG/releases)
 [![Chat on Telegram](https://img.shields.io/badge/Chat%20on-Telegram-brightgreen.svg)](https://t.me/v2rayn)
+
+### Downloads
+- Latest release page: https://github.com/2dust/v2rayNG/releases/latest
+- Universal APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_universal.apk
+- ARM64 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_arm64-v8a.apk
+- ARMv7 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_armeabi-v7a.apk
+- x86_64 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_x86_64.apk
+- x86 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_x86.apk
 
 ### Telegram Channel
 [github_2dust](https://t.me/github_2dust)

@@ -10,17 +10,31 @@ A V2Ray client for Android, support [Xray core](https://github.com/XTLS/Xray-cor
 [![Chat on Telegram](https://img.shields.io/badge/Chat%20on-Telegram-brightgreen.svg)](https://t.me/v2rayn)
 
 ### Downloads
-- Latest release page: https://github.com/2dust/v2rayNG/releases/latest
-- Universal APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_universal.apk
-- ARM64 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_arm64-v8a.apk
-- ARMv7 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_armeabi-v7a.apk
-- x86_64 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_x86_64.apk
-- x86 APK: https://github.com/2dust/v2rayNG/releases/latest/download/v2rayNG_1.10.32_x86.apk
+- Latest release page: https://github.com/desmondep/Mir2Ray/releases/latest
+- Universal APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_universal.apk
+- ARM64 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_arm64-v8a.apk
+- ARMv7 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_armeabi-v7a.apk
+- x86_64 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86_64.apk
+- x86 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86.apk
+
+### Latest local build artifacts
+- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_universal.apk
+- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_arm64-v8a.apk
+- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_armeabi-v7a.apk
+- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_x86_64.apk
+- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_x86.apk
 
 ### Telegram Channel
 [github_2dust](https://t.me/github_2dust)
 
 ### Usage
+
+#### Quick Start (Android)
+1. Download the Universal APK from the release page (or choose ABI-specific APK).
+2. Install APK on Android device and allow installation from unknown sources.
+3. Open the app, tap `+`, then import your profile by URL / QR code / clipboard / file.
+4. Tap the connection button to start VPN.
+5. If this is first run, grant VPN permission when Android asks.
 
 #### Geoip and Geosite
 - geoip.dat and geosite.dat files are in `Android/data/com.v2ray.ang/files/assets` (path may differ on some Android device)

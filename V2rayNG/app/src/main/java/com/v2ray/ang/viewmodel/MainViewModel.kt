@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.AssetManager
+import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -72,7 +73,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun reloadServerList() {
         serverList = MmkvManager.decodeServerList()
         updateCache()
-        updateListAction.value = -1
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            updateListAction.value = -1
+        } else {
+            updateListAction.postValue(-1)
+        }
     }
 
     /**

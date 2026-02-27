@@ -135,7 +135,10 @@ class V2RayVpnService : VpnService(), ServiceControl {
             return
         }
 
-        runTun2socks()
+        if (!runTun2socks()) {
+            Log.e(AppConfig.TAG, "Failed to start tunnel service; stopping VPN")
+            stopV2Ray()
+        }
     }
 
     /**
@@ -294,24 +297,39 @@ class V2RayVpnService : VpnService(), ServiceControl {
      * Runs the tun2socks process.
      * Starts the tun2socks process with the appropriate parameters.
      */
-    private fun runTun2socks() {
-        if (MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, true) == true) {
-            tun2SocksService = TProxyService(
-                context = applicationContext,
-                vpnInterface = mInterface,
-                isRunningProvider = { isRunning },
-                restartCallback = { runTun2socks() }
-            )
-        } else {
+    private fun runTun2socks(): Boolean {
+        val useHevPreferred = MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, true) == true
+
+        if (useHevPreferred && TProxyService.isNativeAvailable()) {
+            try {
+                tun2SocksService = TProxyService(
+                    context = applicationContext,
+                    vpnInterface = mInterface,
+                    isRunningProvider = { isRunning },
+                    restartCallback = { runTun2socks() }
+                )
+                tun2SocksService?.startTun2Socks()
+                return true
+            } catch (e: Exception) {
+                Log.e(AppConfig.TAG, "Failed to start HEV tunnel, fallback to tun2socks", e)
+            }
+        } else if (useHevPreferred) {
+            Log.w(AppConfig.TAG, "HEV tunnel requested but native lib is unavailable; fallback to tun2socks")
+        }
+
+        return try {
             tun2SocksService = Tun2SocksService(
                 context = applicationContext,
                 vpnInterface = mInterface,
                 isRunningProvider = { isRunning },
                 restartCallback = { runTun2socks() }
             )
+            tun2SocksService?.startTun2Socks()
+            true
+        } catch (e: Exception) {
+            Log.e(AppConfig.TAG, "Failed to start tun2socks fallback", e)
+            false
         }
-
-        tun2SocksService?.startTun2Socks()
     }
 
     /**

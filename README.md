@@ -24,6 +24,20 @@ A V2Ray client for Android, support [Xray core](https://github.com/XTLS/Xray-cor
 - V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_x86_64.apk
 - V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_x86.apk
 
+### Latest updates in this custom build
+- App name unified to `Mir2Ray` across flavors.
+- Launcher icon redesigned to neon green `M` with dark theme-compatible adaptive icon assets.
+- Startup crash and connect-flow stability fixes (including pending-connect cancel behavior).
+- HEV tunnel native-lib fallback: if `libhev-socks5-tunnel.so` is unavailable, app falls back to tun2socks instead of crashing.
+- Subscription import/parsing hardening for malformed rows and safer VLESS query handling.
+- Connection state UX improvements:
+	- no infinite `Connecting` state,
+	- explicit failed/disconnected status transitions,
+	- active-state animation for first two action buttons.
+- `Give New Configs` and `Optimize` now use real-delay based server filtering.
+- Auto-monitor every 10s while connected: if no ping for 10s or ping > 600ms, app auto-runs optimize in background and reconnects.
+- Determinate progress bars added for `Give New Configs` and `Optimize` so users can track completion percentage.
+
 ### Telegram Channel
 [github_2dust](https://t.me/github_2dust)
 

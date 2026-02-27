@@ -12,6 +12,42 @@ import java.net.URI
 
 object VlessFmt : FmtBase() {
 
+    private fun sanitizeVlessUri(raw: String): String {
+        val input = Utils.fixIllegalUrl(raw.trim())
+        val hashIndex = input.indexOf('#')
+        val withoutFragment = if (hashIndex >= 0) input.substring(0, hashIndex) else input
+        val fragment = if (hashIndex >= 0) input.substring(hashIndex + 1) else ""
+
+        val queryIndex = withoutFragment.indexOf('?')
+        if (queryIndex < 0) return input
+
+        val prefix = withoutFragment.substring(0, queryIndex)
+        val query = withoutFragment.substring(queryIndex + 1)
+        val sanitizedQuery = query.split("&")
+            .mapNotNull { part ->
+                if (part.isBlank()) return@mapNotNull null
+                val equalIndex = part.indexOf('=')
+                if (equalIndex <= 0) return@mapNotNull null
+                val key = part.substring(0, equalIndex)
+                val value = part.substring(equalIndex + 1)
+
+                val safeValue = if (key.equals("headers", true) || key.equals("header", true)) {
+                    Utils.urlEncode(value)
+                } else {
+                    value
+                        .replace("#", "%23")
+                        .replace("{", "%7B")
+                        .replace("}", "%7D")
+                        .replace("'", "%27")
+                }
+                "$key=$safeValue"
+            }
+            .joinToString("&")
+
+        val safeFragment = if (fragment.isNotBlank()) "#${Utils.urlEncode(Utils.urlDecode(fragment))}" else ""
+        return "$prefix?$sanitizedQuery$safeFragment"
+    }
+
     /**
      * Parses a Vless URI string into a ProfileItem object.
      *
@@ -22,7 +58,11 @@ object VlessFmt : FmtBase() {
         var allowInsecure = MmkvManager.decodeSettingsBool(AppConfig.PREF_ALLOW_INSECURE, false)
         val config = ProfileItem.create(EConfigType.VLESS)
 
-        val uri = URI(Utils.fixIllegalUrl(str))
+        val uri = try {
+            URI(Utils.fixIllegalUrl(str))
+        } catch (_: Exception) {
+            URI(sanitizeVlessUri(str))
+        }
         if (uri.rawQuery.isNullOrEmpty()) return null
         val queryParam = getQueryParam(uri)
 

@@ -28,15 +28,29 @@ class TProxyService(
         @Suppress("FunctionName")
         private external fun TProxyGetStats(): LongArray?
 
-        init {
-            System.loadLibrary("hev-socks5-tunnel")
+        private val isNativeLibLoaded: Boolean by lazy {
+            try {
+                System.loadLibrary("hev-socks5-tunnel")
+                true
+            } catch (e: UnsatisfiedLinkError) {
+                Log.e(AppConfig.TAG, "hev-socks5-tunnel native lib not found", e)
+                false
+            } catch (e: Throwable) {
+                Log.e(AppConfig.TAG, "failed to load hev-socks5-tunnel native lib", e)
+                false
+            }
         }
+
+        fun isNativeAvailable(): Boolean = isNativeLibLoaded
     }
 
     /**
      * Starts the tun2socks process with the appropriate parameters.
      */
     override fun startTun2Socks() {
+        if (!isNativeAvailable()) {
+            throw IllegalStateException("hev-socks5-tunnel native library is unavailable")
+        }
         Log.i(AppConfig.TAG, "Starting HevSocks5Tunnel via JNI")
 
         val configContent = buildConfig()

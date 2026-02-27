@@ -42,8 +42,18 @@ open class FmtBase {
      * @return a map of query parameters
      */
     fun getQueryParam(uri: URI): Map<String, String> {
-        return uri.rawQuery.split("&")
-            .associate { it.split("=").let { (k, v) -> k to Utils.urlDecode(v) } }
+        val rawQuery = uri.rawQuery ?: return emptyMap()
+        return rawQuery.split("&")
+            .mapNotNull { part ->
+                if (part.isBlank()) return@mapNotNull null
+                val index = part.indexOf('=')
+                when {
+                    index < 0 -> part to ""
+                    index == 0 -> null
+                    else -> part.substring(0, index) to Utils.urlDecode(part.substring(index + 1))
+                }
+            }
+            .toMap()
     }
 
     /**

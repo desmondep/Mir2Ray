@@ -286,6 +286,7 @@
     <string name="neon_disconnect">Disconnect</string>
     <string name="neon_idle">Idle</string>
     <string name="neon_connecting">Connecting…</string>
+    <string name="neon_connected">Connected</string>
     <string name="neon_connect_failed">Connection failed</string>
     <string name="neon_fetching_configs">Getting new configs…</string>
     <string name="neon_checking_configs">Checking configs…</string>
@@ -296,7 +297,10 @@
     <string name="neon_optimized_ready">Optimized intelligent config is ready</string>
     <string name="neon_disconnected">Disconnected</string>
     <string name="neon_ping_unknown">unknown</string>
+    <string name="neon_ping_unavailable_short">Ping unavailable</string>
     <string name="neon_connected_with_ping">Connected • Ping: %1$s</string>
+    <string name="neon_auto_optimizing">Auto optimizing in background…</string>
+    <string name="neon_auto_reconnecting">Reconnecting with optimized config…</string>
     <string name="title_sub_update">Update current group subscription</string>
     <string name="title_ping_all_server">Tcping current group configuration</string>
     <string name="title_real_ping_all_server">Real delay current group configuration</string>

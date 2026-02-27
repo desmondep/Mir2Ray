@@ -137,6 +137,17 @@
                         app:strokeColor="@color/neon_green"
                         app:strokeWidth="1dp" />
 
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/pb_give_progress"
+                        android:layout_width="match_parent"
+                        android:layout_height="4dp"
+                        android:layout_marginTop="-8dp"
+                        android:layout_marginBottom="12dp"
+                        android:max="100"
+                        android:visibility="gone"
+                        app:indicatorColor="@color/neon_green"
+                        app:trackColor="@color/neon_button_bg" />
+
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btn_optimize"
                         style="@style/Widget.Material3.Button"
@@ -149,6 +160,17 @@
                         app:backgroundTint="@color/neon_button_bg"
                         app:strokeColor="@color/neon_green"
                         app:strokeWidth="1dp" />
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/pb_optimize_progress"
+                        android:layout_width="match_parent"
+                        android:layout_height="4dp"
+                        android:layout_marginTop="-8dp"
+                        android:layout_marginBottom="12dp"
+                        android:max="100"
+                        android:visibility="gone"
+                        app:indicatorColor="@color/neon_green"
+                        app:trackColor="@color/neon_button_bg" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btn_connect"

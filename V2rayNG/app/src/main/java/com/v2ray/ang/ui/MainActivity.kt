@@ -28,6 +28,7 @@ import androidx.drawerlayout.widget.DrawerLayout
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.ItemTouchHelper
+import com.google.android.material.button.MaterialButton
 import com.google.android.material.navigation.NavigationView
 import com.google.android.material.tabs.TabLayout
 import com.v2ray.ang.AppConfig
@@ -40,9 +41,11 @@ import com.v2ray.ang.extension.toastError
 import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MigrateManager
 import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.PluginServiceManager
 import com.v2ray.ang.handler.SpeedtestManager
 import com.v2ray.ang.helper.SimpleItemTouchHelperCallback
 import com.v2ray.ang.handler.V2RayServiceManager
+import com.v2ray.ang.handler.V2rayConfigManager
 import com.v2ray.ang.util.HttpUtil
 import com.v2ray.ang.util.Utils
 import com.v2ray.ang.viewmodel.MainViewModel
@@ -57,6 +60,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedListener {
     private val binding by lazy {
@@ -66,7 +70,17 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private val adapter by lazy { MainRecyclerAdapter(this) }
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) {
-            startV2Ray()
+            if (!startV2Ray()) {
+                pendingConnectAttempt = false
+                binding.pbConnect.isVisible = false
+                stopConnectPulse()
+                updateProcessState(getString(R.string.neon_connect_failed))
+            }
+        } else {
+            pendingConnectAttempt = false
+            binding.pbConnect.isVisible = false
+            stopConnectPulse()
+            updateProcessState(getString(R.string.neon_connect_failed))
         }
     }
     private val requestSubSettingActivity = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -89,13 +103,22 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private var mItemTouchHelper: ItemTouchHelper? = null
     val mainViewModel: MainViewModel by viewModels()
     private var connectPulseAnimator: ObjectAnimator? = null
+    private var giveConfigsPulseAnimator: ObjectAnimator? = null
+    private var optimizePulseAnimator: ObjectAnimator? = null
     private var scanlineAnimator: ObjectAnimator? = null
     private var pingLoopJob: Job? = null
+    private var connectTimeoutJob: Job? = null
+    private var autoOptimizeJob: Job? = null
     private var lastPingText: String? = null
+    private var lastPingMillis: Long? = null
+    private var lastPingUpdateAtMillis: Long = 0L
+    private var lastAutoOptimizeAtMillis: Long = 0L
     private var pendingConnectAttempt = false
+    private var isGiveConfigsRunning = false
+    private var isOptimizeRunning = false
 
     private val fixedSubscriptionUrl =
-        "https://raw.githubusercontent.com/miraali1372/mirsub/main/subscription.txt"
+        "https://raw.githubusercontent.com/miraali1372/mirsub2/main/subscription.txt"
 
     // register activity result for requesting permission
     private val requestPermissionLauncher =
@@ -246,12 +269,22 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         }
         mainViewModel.updateTestResultAction.observe(this) {
             lastPingText = it
-            setTestState(it)
+            lastPingMillis = parsePingMillis(it)
+            lastPingUpdateAtMillis = System.currentTimeMillis()
+            val displayText = if (mainViewModel.isRunning.value == true && isPingErrorText(it)) {
+                getString(R.string.neon_ping_unavailable_short)
+            } else {
+                it
+            }
+            setTestState(displayText)
             updateConnectionStateText(mainViewModel.isRunning.value == true)
+            maybeTriggerAutoOptimize("ping-update")
         }
         mainViewModel.isRunning.observe(this) { isRunning ->
             adapter.isRunning = isRunning
             if (isRunning) {
+                connectTimeoutJob?.cancel()
+                connectTimeoutJob = null
                 binding.fab.setImageResource(R.drawable.ic_stop_24dp)
                 binding.fab.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.color_fab_active))
                 binding.fab.contentDescription = getString(R.string.action_stop_service)
@@ -261,10 +294,16 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                 binding.pbConnect.isVisible = false
                 stopConnectPulse()
                 pendingConnectAttempt = false
+                lastPingUpdateAtMillis = System.currentTimeMillis()
+                updateProcessState(getString(R.string.neon_connected))
                 if (mainViewModel.isRunning.value == true) {
                     startPingLoop()
                 }
             } else {
+                connectTimeoutJob?.cancel()
+                connectTimeoutJob = null
+                autoOptimizeJob?.cancel()
+                autoOptimizeJob = null
                 binding.fab.setImageResource(R.drawable.ic_play_24dp)
                 binding.fab.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.color_fab_inactive))
                 binding.fab.contentDescription = getString(R.string.tasker_start_service)
@@ -277,6 +316,8 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                     pendingConnectAttempt = false
                     binding.pbConnect.isVisible = false
                     stopConnectPulse()
+                } else {
+                    updateProcessState(getString(R.string.neon_disconnected))
                 }
             }
             updateConnectionStateText(isRunning)
@@ -323,12 +364,17 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         binding.tabGroup.isVisible = true
     }
 
-    private fun startV2Ray() {
+    private fun startV2Ray(): Boolean {
         if (MmkvManager.getSelectServer().isNullOrEmpty()) {
             toast(R.string.title_file_chooser)
-            return
+            pendingConnectAttempt = false
+            binding.pbConnect.isVisible = false
+            stopConnectPulse()
+            updateProcessState(getString(R.string.neon_connect_failed))
+            return false
         }
         V2RayServiceManager.startVService(this)
+        return true
     }
 
     private fun restartV2Ray() {
@@ -352,7 +398,11 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
 
     override fun onDestroy() {
         stopPingLoop()
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = null
         stopConnectPulse()
+        setGiveConfigsLoading(false)
+        setOptimizeLoading(false)
         scanlineAnimator?.cancel()
         scanlineAnimator = null
         super.onDestroy()
@@ -677,77 +727,133 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     }
 
     private fun toggleConnect() {
-        if (mainViewModel.isRunning.value == true) {
+        if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
+            connectTimeoutJob?.cancel()
+            connectTimeoutJob = null
             pendingConnectAttempt = false
             stopConnectPulse()
             binding.pbConnect.isVisible = false
             V2RayServiceManager.stopVService(this)
+            updateProcessState(getString(R.string.neon_connect_failed))
             return
+        }
+
+        if (mainViewModel.isRunning.value == true) {
+            connectTimeoutJob?.cancel()
+            connectTimeoutJob = null
+            autoOptimizeJob?.cancel()
+            autoOptimizeJob = null
+            pendingConnectAttempt = false
+            stopConnectPulse()
+            binding.pbConnect.isVisible = false
+            V2RayServiceManager.stopVService(this)
+            updateProcessState(getString(R.string.neon_disconnected))
+            return
+        }
+
+        val switchedFromIntelligent = switchFromIntelligentSelectionIfNeeded()
+        if (switchedFromIntelligent) {
+            mainViewModel.reloadServerList()
         }
 
         pendingConnectAttempt = true
         binding.pbConnect.isVisible = true
         startConnectPulse()
         updateProcessState(getString(R.string.neon_connecting))
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = lifecycleScope.launch {
+            delay(15_000)
+            if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
+                pendingConnectAttempt = false
+                binding.pbConnect.isVisible = false
+                stopConnectPulse()
+                updateProcessState(getString(R.string.neon_connect_failed))
+            }
+        }
 
         if ((MmkvManager.decodeSettingsString(AppConfig.PREF_MODE) ?: VPN) == VPN) {
             val intent = VpnService.prepare(this)
             if (intent == null) {
-                startV2Ray()
+                if (!startV2Ray()) return
             } else {
                 requestVpnPermission.launch(intent)
             }
         } else {
-            startV2Ray()
+            if (!startV2Ray()) return
         }
     }
 
     private suspend fun processGiveNewConfigs() {
+        if (isGiveConfigsRunning) return
+        isGiveConfigsRunning = true
+        setGiveConfigsLoading(true)
+        updateGiveProgress(0)
         binding.pbWaiting.show()
         updateProcessState(getString(R.string.neon_fetching_configs))
 
-        val success = withContext(Dispatchers.IO) {
-            try {
-                val fetched = HttpUtil.getUrlContentWithUserAgent(fixedSubscriptionUrl, null)
-                val normalized = normalizeConfigRows(fetched)
-                if (normalized.isBlank()) {
-                    return@withContext false
-                }
+        val success = try {
+            withContext(Dispatchers.IO) {
+                try {
+                    MmkvManager.removeAllServer()
+                    mainViewModel.reloadServerList()
+                    runOnUiThread { updateGiveProgress(8) }
 
-                MmkvManager.removeAllServer()
-                AngConfigManager.importBatchConfig(normalized, "", true)
-                mainViewModel.reloadServerList()
+                    val fetched = HttpUtil.getUrlContentWithUserAgent(fixedSubscriptionUrl, null)
+                    val normalized = normalizeConfigRows(fetched)
+                    if (normalized.isBlank()) {
+                        return@withContext false
+                    }
+                    runOnUiThread { updateGiveProgress(20) }
 
-                withContext(Dispatchers.Main) {
-                    updateProcessState(getString(R.string.neon_checking_configs))
-                }
-                mainViewModel.removeDuplicateServer()
-                mainViewModel.reloadServerList()
+                    AngConfigManager.importBatchConfig(normalized, "", true)
+                    mainViewModel.reloadServerList()
+                    runOnUiThread { updateGiveProgress(35) }
 
-                withContext(Dispatchers.Main) {
-                    updateProcessState(getString(R.string.neon_building_intelligent))
-                }
-                val removedCount = removeSlowAndInvalidServers()
-                mainViewModel.sortByTestResults()
-                mainViewModel.reloadServerList()
+                    withContext(Dispatchers.Main) {
+                        updateProcessState(getString(R.string.neon_checking_configs))
+                    }
+                    mainViewModel.removeDuplicateServer()
+                    mainViewModel.reloadServerList()
+                    runOnUiThread { updateGiveProgress(45) }
 
-                val key = AngConfigManager.createIntelligentSelection(
-                    this@MainActivity,
-                    mainViewModel.serversCache.map { it.guid },
-                    ""
-                )
-                if (!key.isNullOrBlank()) {
-                    MmkvManager.setSelectServer(key)
+                    withContext(Dispatchers.Main) {
+                        updateProcessState(getString(R.string.neon_building_intelligent))
+                    }
+                    val removedCount = removeSlowAndInvalidServers { done, total ->
+                        if (total > 0) {
+                            val percent = 45 + (done * 35 / total)
+                            runOnUiThread { updateGiveProgress(percent) }
+                        }
+                    }
+                    mainViewModel.sortByTestResults()
+                    mainViewModel.reloadServerList()
+                    runOnUiThread { updateGiveProgress(85) }
+
+                    val key = AngConfigManager.createIntelligentSelection(
+                        this@MainActivity,
+                        mainViewModel.serversCache.map { it.guid },
+                        ""
+                    )
+                    val bestGuid = findBestDirectServerGuid(excludeGuid = key)
+                    if (!bestGuid.isNullOrBlank()) {
+                        MmkvManager.setSelectServer(bestGuid)
+                    } else if (!key.isNullOrBlank()) {
+                        MmkvManager.setSelectServer(key)
+                    }
+                    mainViewModel.reloadServerList()
+                    runOnUiThread { updateGiveProgress(100) }
+                    (!bestGuid.isNullOrBlank() || !key.isNullOrBlank()) && removedCount >= 0
+                } catch (e: Exception) {
+                    Log.e(AppConfig.TAG, "Failed in Give New Configs flow", e)
+                    false
                 }
-                mainViewModel.reloadServerList()
-                key != null && removedCount >= 0
-            } catch (e: Exception) {
-                Log.e(AppConfig.TAG, "Failed in Give New Configs flow", e)
-                false
             }
+        } finally {
+            binding.pbWaiting.hide()
+            setGiveConfigsLoading(false)
+            isGiveConfigsRunning = false
         }
 
-        binding.pbWaiting.hide()
         if (success) {
             updateProcessState(getString(R.string.neon_ready_configs))
         } else {
@@ -756,75 +862,136 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         }
     }
 
-    private suspend fun processOptimizeConfigs() {
-        binding.pbWaiting.show()
+    private suspend fun processOptimizeConfigs(autoTriggered: Boolean = false): Boolean {
+        if (isOptimizeRunning) return false
+        isOptimizeRunning = true
+        if (!autoTriggered) {
+            setOptimizeLoading(true)
+            updateOptimizeProgress(0)
+            binding.pbWaiting.show()
+        }
         updateProcessState(getString(R.string.neon_optimizing))
 
-        val success = withContext(Dispatchers.IO) {
-            try {
-                removePreviousIntelligentConfigs()
-                mainViewModel.reloadServerList()
-                removeSlowAndInvalidServers()
-                mainViewModel.sortByTestResults()
-                mainViewModel.reloadServerList()
+        val success = try {
+            withContext(Dispatchers.IO) {
+                try {
+                    removePreviousIntelligentConfigs()
+                    mainViewModel.reloadServerList()
+                    if (!autoTriggered) {
+                        runOnUiThread { updateOptimizeProgress(15) }
+                    }
+                    removeSlowAndInvalidServers { done, total ->
+                        if (!autoTriggered && total > 0) {
+                            val percent = 15 + (done * 60 / total)
+                            runOnUiThread { updateOptimizeProgress(percent) }
+                        }
+                    }
+                    mainViewModel.sortByTestResults()
+                    mainViewModel.reloadServerList()
+                    if (!autoTriggered) {
+                        runOnUiThread { updateOptimizeProgress(82) }
+                    }
 
-                val key = AngConfigManager.createIntelligentSelection(
-                    this@MainActivity,
-                    mainViewModel.serversCache.map { it.guid },
-                    ""
-                )
-                if (!key.isNullOrBlank()) {
-                    MmkvManager.setSelectServer(key)
+                    val key = AngConfigManager.createIntelligentSelection(
+                        this@MainActivity,
+                        mainViewModel.serversCache.map { it.guid },
+                        ""
+                    )
+                    val bestGuid = findBestDirectServerGuid(excludeGuid = key)
+                    if (!bestGuid.isNullOrBlank()) {
+                        MmkvManager.setSelectServer(bestGuid)
+                    } else if (!key.isNullOrBlank()) {
+                        MmkvManager.setSelectServer(key)
+                    }
+                    mainViewModel.reloadServerList()
+                    if (!autoTriggered) {
+                        runOnUiThread { updateOptimizeProgress(100) }
+                    }
+                    !bestGuid.isNullOrBlank() || !key.isNullOrBlank()
+                } catch (e: Exception) {
+                    Log.e(AppConfig.TAG, "Failed in Optimize flow", e)
+                    false
                 }
-                mainViewModel.reloadServerList()
-                !key.isNullOrBlank()
-            } catch (e: Exception) {
-                Log.e(AppConfig.TAG, "Failed in Optimize flow", e)
-                false
             }
+        } finally {
+            if (!autoTriggered) {
+                binding.pbWaiting.hide()
+                setOptimizeLoading(false)
+            }
+            isOptimizeRunning = false
         }
 
-        binding.pbWaiting.hide()
         if (success) {
             updateProcessState(getString(R.string.neon_optimized_ready))
         } else {
             updateProcessState(getString(R.string.neon_failed_configs))
-            toastError(R.string.toast_failure)
+            if (!autoTriggered) {
+                toastError(R.string.toast_failure)
+            }
         }
+        return success
     }
 
     private suspend fun removeSlowAndInvalidServers(): Int {
+        return removeSlowAndInvalidServers(null)
+    }
+
+    private suspend fun removeSlowAndInvalidServers(onProgress: ((done: Int, total: Int) -> Unit)?): Int {
         mainViewModel.reloadServerList()
         val candidates = mainViewModel.serversCache
             .filter { it.profile.configType != EConfigType.CUSTOM }
             .toList()
 
         val removeList = mutableListOf<String>()
+        val measuredDelay = mutableMapOf<String, Long>()
+        val processedCount = AtomicInteger(0)
         val limiter = Semaphore(24)
         coroutineScope {
             candidates.map { item ->
                 async(Dispatchers.IO) {
                     limiter.withPermit {
-                        val host = item.profile.server
-                        val port = item.profile.serverPort?.toIntOrNull()
-                        val delay = if (host.isNullOrBlank() || port == null) {
-                            -1L
-                        } else {
-                            SpeedtestManager.tcping(host, port)
-                        }
+                        val delay = measureRealDelayForGuid(item.guid)
                         MmkvManager.encodeServerTestDelayMillis(item.guid, delay)
-                        if (delay < 0L || delay > 400L) {
+                        synchronized(measuredDelay) {
+                            measuredDelay[item.guid] = delay
+                        }
+                        if (delay < 0L || delay > 600L) {
                             synchronized(removeList) {
                                 removeList.add(item.guid)
                             }
                         }
+                        val done = processedCount.incrementAndGet()
+                        onProgress?.invoke(done, candidates.size)
                     }
                 }
             }.awaitAll()
         }
 
+        if (removeList.size >= candidates.size && candidates.isNotEmpty()) {
+            val keepGuid = measuredDelay
+                .filterValues { it > 0L }
+                .minByOrNull { it.value }
+                ?.key
+                ?: candidates.first().guid
+            removeList.remove(keepGuid)
+        }
+
         removeList.forEach { MmkvManager.removeServer(it) }
         return removeList.size
+    }
+
+    private fun measureRealDelayForGuid(guid: String): Long {
+        val config = MmkvManager.decodeServerConfig(guid) ?: return -1L
+        return if (config.configType == EConfigType.HYSTERIA2) {
+            PluginServiceManager.realPingHy2(this, config)
+        } else {
+            val configResult = V2rayConfigManager.getV2rayConfig4Speedtest(this, guid)
+            if (!configResult.status) {
+                -1L
+            } else {
+                SpeedtestManager.realPing(configResult.content)
+            }
+        }
     }
 
     private fun removePreviousIntelligentConfigs() {
@@ -847,12 +1014,45 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         return if (links.isEmpty()) content else links.joinToString("\n")
     }
 
+    private fun findBestDirectServerGuid(excludeGuid: String? = null): String? {
+        val marker = getString(R.string.intelligent_selection)
+        return mainViewModel.serversCache
+            .asSequence()
+            .filter { it.guid != excludeGuid }
+            .filter { it.profile.configType != EConfigType.CUSTOM }
+            .filterNot { it.profile.remarks.contains(marker, ignoreCase = true) }
+            .sortedWith(compareBy({ directServerDelayScore(it.guid) }, { it.profile.remarks }))
+            .map { it.guid }
+            .firstOrNull()
+    }
+
+    private fun switchFromIntelligentSelectionIfNeeded(): Boolean {
+        val selectedGuid = MmkvManager.getSelectServer().orEmpty()
+        if (selectedGuid.isBlank()) return false
+
+        val selected = MmkvManager.decodeServerConfig(selectedGuid) ?: return false
+        val marker = getString(R.string.intelligent_selection)
+        val isIntelligent =
+            selected.configType == EConfigType.CUSTOM && selected.remarks.contains(marker, ignoreCase = true)
+        if (!isIntelligent) return false
+
+        val fallbackGuid = findBestDirectServerGuid(excludeGuid = selectedGuid) ?: return false
+        MmkvManager.setSelectServer(fallbackGuid)
+        return true
+    }
+
+    private fun directServerDelayScore(guid: String): Long {
+        val delay = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: Long.MAX_VALUE
+        return if (delay > 0L) delay else Long.MAX_VALUE
+    }
+
     private fun startPingLoop() {
         stopPingLoop()
         pingLoopJob = lifecycleScope.launch {
             while (isActive && mainViewModel.isRunning.value == true) {
                 mainViewModel.testCurrentServerRealPing()
                 delay(10_000)
+                maybeTriggerAutoOptimize("ping-loop")
             }
         }
     }
@@ -860,6 +1060,51 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private fun stopPingLoop() {
         pingLoopJob?.cancel()
         pingLoopJob = null
+    }
+
+    private fun parsePingMillis(result: String?): Long? {
+        if (result.isNullOrBlank()) return null
+        val lower = result.lowercase()
+        if (lower.contains("fail") || lower.contains("unavailable") || lower.contains("error")) {
+            return null
+        }
+        return Regex("(\\d+)\\s*ms", RegexOption.IGNORE_CASE)
+            .find(result)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toLongOrNull()
+    }
+
+    private fun isPingErrorText(result: String?): Boolean {
+        if (result.isNullOrBlank()) return true
+        val lower = result.lowercase()
+        return lower.contains("fail") || lower.contains("error") || lower.contains("unavailable")
+    }
+
+    private fun maybeTriggerAutoOptimize(trigger: String) {
+        if (mainViewModel.isRunning.value != true) return
+        if (pendingConnectAttempt) return
+        if (isGiveConfigsRunning || isOptimizeRunning) return
+        if (autoOptimizeJob?.isActive == true) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastAutoOptimizeAtMillis < 20_000) return
+
+        val noPingTooLong = now - lastPingUpdateAtMillis >= 10_000
+        val pingTooHigh = (lastPingMillis ?: Long.MAX_VALUE) > 600L
+        if (!noPingTooLong && !pingTooHigh) return
+
+        lastAutoOptimizeAtMillis = now
+        autoOptimizeJob = lifecycleScope.launch {
+            updateProcessState(getString(R.string.neon_auto_optimizing))
+            val optimized = processOptimizeConfigs(autoTriggered = true)
+            if (optimized && mainViewModel.isRunning.value == true) {
+                updateProcessState(getString(R.string.neon_auto_reconnecting))
+                restartV2Ray()
+            } else if (!optimized) {
+                Log.w(AppConfig.TAG, "Auto optimize failed via $trigger")
+            }
+        }
     }
 
     private fun updateProcessState(message: String) {
@@ -886,6 +1131,69 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             repeatCount = ObjectAnimator.INFINITE
             start()
         }
+    }
+
+    private fun startButtonPulse(button: MaterialButton): ObjectAnimator {
+        return ObjectAnimator.ofPropertyValuesHolder(
+            button,
+            PropertyValuesHolder.ofFloat("scaleX", 1f, 1.04f, 1f),
+            PropertyValuesHolder.ofFloat("scaleY", 1f, 1.04f, 1f)
+        ).apply {
+            duration = 900
+            repeatCount = ObjectAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopButtonPulse(button: MaterialButton, animator: ObjectAnimator?) {
+        animator?.cancel()
+        button.scaleX = 1f
+        button.scaleY = 1f
+        button.isEnabled = true
+    }
+
+    private fun setGiveConfigsLoading(isLoading: Boolean) {
+        if (isLoading) {
+            binding.btnGiveConfigs.isEnabled = false
+            binding.pbGiveProgress.isVisible = true
+            giveConfigsPulseAnimator?.cancel()
+            giveConfigsPulseAnimator = startButtonPulse(binding.btnGiveConfigs)
+        } else {
+            stopButtonPulse(binding.btnGiveConfigs, giveConfigsPulseAnimator)
+            giveConfigsPulseAnimator = null
+            binding.pbGiveProgress.isVisible = false
+            binding.pbGiveProgress.progress = 0
+        }
+    }
+
+    private fun setOptimizeLoading(isLoading: Boolean) {
+        if (isLoading) {
+            binding.btnOptimize.isEnabled = false
+            binding.pbOptimizeProgress.isVisible = true
+            optimizePulseAnimator?.cancel()
+            optimizePulseAnimator = startButtonPulse(binding.btnOptimize)
+        } else {
+            stopButtonPulse(binding.btnOptimize, optimizePulseAnimator)
+            optimizePulseAnimator = null
+            binding.pbOptimizeProgress.isVisible = false
+            binding.pbOptimizeProgress.progress = 0
+        }
+    }
+
+    private fun updateGiveProgress(percent: Int) {
+        val value = percent.coerceIn(0, 100)
+        if (!binding.pbGiveProgress.isVisible) {
+            binding.pbGiveProgress.isVisible = true
+        }
+        binding.pbGiveProgress.setProgressCompat(value, true)
+    }
+
+    private fun updateOptimizeProgress(percent: Int) {
+        val value = percent.coerceIn(0, 100)
+        if (!binding.pbOptimizeProgress.isVisible) {
+            binding.pbOptimizeProgress.isVisible = true
+        }
+        binding.pbOptimizeProgress.setProgressCompat(value, true)
     }
 
     private fun stopConnectPulse() {

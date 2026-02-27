@@ -1363,7 +1363,12 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             } else {
                 "پینگ ${confirmedDelay}ms بالای 500"
             }
-            updateProcessState("$switchReason؛ حذف کانفیگ فعلی و سوییچ به بعدی…")
+            updateProcessState("$switchReason؛ سوییچ به کانفیگ بعدی…")
+
+            // Mark current config with a bad delay score so it's deprioritized
+            withContext(Dispatchers.IO) {
+                MmkvManager.encodeServerTestDelayMillis(selectedGuid, 99999L)
+            }
 
             val nextGuid = withContext(Dispatchers.IO) {
                 mainViewModel.sortByTestResults()
@@ -1372,15 +1377,6 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
 
             if (nextGuid.isNullOrBlank()) {
                 updateProcessState("کانفیگ جایگزین وجود ندارد؛ کانفیگ فعلی نگه داشته شد")
-                return false
-            }
-
-            withContext(Dispatchers.IO) {
-                runCatching { MmkvManager.removeServer(selectedGuid) }
-            }
-            mainViewModel.reloadServerList()
-            if (availableServerCount() <= 0) {
-                handleEmptyConfigsWhileConnected()
                 return false
             }
 

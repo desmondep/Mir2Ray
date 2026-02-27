@@ -1,83 +1,94 @@
 # Mir2Ray
 
-A V2Ray client for Android, support [Xray core](https://github.com/XTLS/Xray-core) and [v2fly core](https://github.com/v2fly/v2ray-core)
+یک کلاینت VPN ساده برای اندروید، بر پایه [v2rayNG](https://github.com/2dust/v2rayNG) با هسته [Xray](https://github.com/XTLS/Xray-core)
 
 [![API](https://img.shields.io/badge/API-21%2B-yellow.svg?style=flat)](https://developer.android.com/about/versions/lollipop)
-[![Kotlin Version](https://img.shields.io/badge/Kotlin-2.3.0-blue.svg)](https://kotlinlang.org)
-[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/2dust/v2rayNG)](https://github.com/2dust/v2rayNG/commits/master)
-[![CodeFactor](https://www.codefactor.io/repository/github/2dust/v2rayng/badge)](https://www.codefactor.io/repository/github/2dust/v2rayng)
-[![GitHub Releases](https://img.shields.io/github/downloads/2dust/v2rayNG/latest/total?logo=github)](https://github.com/2dust/v2rayNG/releases)
-[![Chat on Telegram](https://img.shields.io/badge/Chat%20on-Telegram-brightgreen.svg)](https://t.me/v2rayn)
+[![GitHub Releases](https://img.shields.io/github/downloads/desmondep/Mir2Ray/total?logo=github)](https://github.com/desmondep/Mir2Ray/releases)
 
-### Downloads
-- Latest release page: https://github.com/desmondep/Mir2Ray/releases/latest
-- Universal APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_universal.apk
-- ARM64 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_arm64-v8a.apk
-- ARMv7 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_armeabi-v7a.apk
-- x86_64 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86_64.apk
-- x86 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86.apk
+---
 
-### راهنمای فارسی (نسخه نهایی)
+## دانلود
 
-#### هشدار امنیتی هنگام نصب APK
-- اگر فایل را خارج از Google Play نصب کنید، پیام Play Protect یا اسکن امنیتی نمایش داده می‌شود.
-- این رفتار در اندروید طبیعی است و الزاماً به معنی آلوده بودن برنامه نیست.
-- پیشنهاد می‌شود فقط از Release رسمی همین ریپو دانلود کنید و SHA256 فایل را قبل از نصب بررسی کنید.
+| نوع APK | لینک دانلود |
+|---------|------------|
+| **Universal (پیشنهادی)** | [دانلود](https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_universal.apk) |
+| ARM64 (اکثر گوشی‌ها) | [دانلود](https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_arm64-v8a.apk) |
+| ARMv7 | [دانلود](https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_armeabi-v7a.apk) |
+| x86_64 | [دانلود](https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86_64.apk) |
+| x86 | [دانلود](https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86.apk) |
 
-#### قابلیت جدید موتور تست Delay
-- برای انتخاب تعداد تست موازی، روی دکمه `Optimize` نگه‌دارید (Long Press).
-- گزینه‌های قابل انتخاب: `20`، `30`، `40`، `50`، `60`.
-- مقدار انتخاب‌شده ذخیره می‌شود و در هر دو مسیر `Give New Configs` و `Optimize` اعمال می‌گردد.
+> اگر نمی‌دانید کدام APK را دانلود کنید، **Universal** را بزنید.
 
-#### نکته عملکردی پیشنهادی
-- مقدار `30` پیش‌فرض امن و پایدار است.
-- مقادیر بالاتر روی دستگاه‌های ضعیف یا شبکه ناپایدار می‌تواند باعث timeout بیشتر و نوسان نتیجه شود.
+---
 
-### Latest local build artifacts
-- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_universal.apk
-- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_arm64-v8a.apk
-- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_armeabi-v7a.apk
-- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_x86_64.apk
-- V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_x86.apk
+## ویژگی‌ها
 
-### Latest updates in this custom build
-- App name unified to `Mir2Ray` across flavors.
-- Launcher icon redesigned to neon green `M` with dark theme-compatible adaptive icon assets.
-- Startup crash and connect-flow stability fixes (including pending-connect cancel behavior).
-- HEV tunnel native-lib fallback: if `libhev-socks5-tunnel.so` is unavailable, app falls back to tun2socks instead of crashing.
-- Subscription import/parsing hardening for malformed rows and safer VLESS query handling.
-- Connection state UX improvements:
-	- no infinite `Connecting` state,
-	- explicit failed/disconnected status transitions,
-	- active-state animation for first two action buttons.
-- `Give New Configs` and `Optimize` now use real-delay based server filtering.
-- Auto-monitor every 10s while connected: if no ping for 10s or ping > 600ms, app auto-runs optimize in background and reconnects.
-- Determinate progress bars added for `Give New Configs` and `Optimize` so users can track completion percentage.
+### رابط ساده سه‌دکمه‌ای
+Mir2Ray رابط پیچیده v2rayNG را به سه دکمه ساده تبدیل کرده:
 
-### Telegram Channel
-[github_2dust](https://t.me/github_2dust)
+| دکمه | عملکرد |
+|-------|--------|
+| **Give New Configs** | دریافت کانفیگ‌های جدید از سابسکریپشن، تست خودکار، حذف کانفیگ‌های بد |
+| **Optimize** | بهینه‌سازی مجدد کانفیگ‌ها، حذف کندها، انتخاب بهترین |
+| **Connect / Disconnect** | اتصال و قطع VPN |
+| **Next Config ⏭** | (فقط هنگام اتصال) رد شدن به کانفیگ بعدی و حذف فعلی |
 
-### Usage
+### سوییچ خودکار
+- هر ۱۲ ثانیه پینگ واقعی تست می‌شود
+- اگر پینگ بالای 500ms یا timeout باشد (تایید دوبار)، کانفیگ فعلی حذف و به بعدی سوییچ می‌شود
+- دکمه **Next Config ⏭** برای سوییچ دستی بدون انتظار
 
-#### Quick Start (Android)
-1. Download the Universal APK from the release page (or choose ABI-specific APK).
-2. Install APK on Android device and allow installation from unknown sources.
-3. Open the app, tap `+`, then import your profile by URL / QR code / clipboard / file.
-4. Tap the connection button to start VPN.
-5. If this is first run, grant VPN permission when Android asks.
+### تنظیم تعداد تست موازی
+- روی دکمه **Optimize** نگه‌دارید (Long Press)
+- گزینه‌ها: `20`، `30`، `40`، `50`، `60`
+- مقدار پیش‌فرض: `30`
 
-#### Geoip and Geosite
-- geoip.dat and geosite.dat files are in `Android/data/com.v2ray.ang/files/assets` (path may differ on some Android device)
-- download feature will get enhanced version in this [repo](https://github.com/Loyalsoldier/v2ray-rules-dat) (Note it need a working proxy)
-- latest official [domain list](https://github.com/Loyalsoldier/v2ray-rules-dat) and [ip list](https://github.com/Loyalsoldier/geoip) can be imported manually
-- possible to use third party dat file in the same folder, like [h2y](https://guide.v2fly.org/routing/sitedata.html#%E5%A4%96%E7%BD%AE%E7%9A%84%E5%9F%9F%E5%90%8D%E6%96%87%E4%BB%B6)
+---
 
-### More in our [wiki](https://github.com/2dust/v2rayNG/wiki)
+## نحوه استفاده
 
-### Development guide
+1. APK را از جدول بالا دانلود و نصب کنید
+2. **Give New Configs** بزنید — کانفیگ‌ها خودکار دریافت و تست می‌شوند
+3. **Connect** بزنید — وصل می‌شوید
+4. اگر کانفیگ فعلی مناسب نبود، **Next Config ⏭** بزنید
 
-Android project under V2rayNG folder can be compiled directly in Android Studio, or using Gradle wrapper. But the v2ray core inside the aar is (probably) outdated.  
-The aar can be compiled from the Golang project [AndroidLibV2rayLite](https://github.com/2dust/AndroidLibV2rayLite) or [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite).
+> اگر پیام Play Protect نشان داده شد، طبیعی است — فایل را فقط از Release رسمی همین ریپو دانلود کنید.
+
+---
+
+## هشدار امنیتی
+- فقط از [صفحه Release رسمی](https://github.com/desmondep/Mir2Ray/releases) دانلود کنید
+- SHA256 فایل را قبل از نصب بررسی کنید
+
+---
+
+## تغییرات نسخه فعلی (v1.10.32-r2)
+
+- ✅ **دکمه Next Config ⏭**: سوییچ دستی به کانفیگ بعدی و حذف فعلی هنگام اتصال
+- ✅ **رفع مشکل اینترنت روی گوشی**: `libtun2socks.so` برای ARM64 ساخته شد — قبلاً فقط روی شبیه‌ساز x86_64 کار می‌کرد
+- ✅ سوییچ خودکار با تایید دوبار پینگ
+- ✅ محافظت از race condition در دکمه اتصال
+- ✅ آیکون نوتیفیکیشن M
+- ✅ موتور تانل tun2socks-first با fallback به HEV
+- ✅ پروگرس‌بار برای Give و Optimize
+- ✅ تست Delay موازی با انتخاب کاربر
+
+---
+
+## ساخت از سورس
+
+```bash
+cd V2rayNG
+./gradlew :app:assembleFdroidDebug
+```
+
+APKها در مسیر `V2rayNG/app/build/outputs/apk/fdroid/debug/` ساخته می‌شوند.
+
+---
+
+## لایسنس
+
+[GPL-3.0](LICENSE)
 For a quick start, read guide for [Go Mobile](https://github.com/golang/go/wiki/Mobile) and [Makefiles for Go Developers](https://tutorialedge.net/golang/makefiles-for-go-developers/)
 
 v2rayNG can run on Android Emulators. For WSA, VPN permission need to be granted via

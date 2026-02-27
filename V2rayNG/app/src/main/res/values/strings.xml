@@ -296,6 +296,7 @@
     <string name="neon_optimizing">Re-optimizing configs…</string>
     <string name="neon_optimized_ready">Optimized intelligent config is ready</string>
     <string name="neon_disconnected">Disconnected</string>
+    <string name="neon_next_config">Next Config ⏭</string>
     <string name="neon_ping_unknown">unknown</string>
     <string name="neon_ping_unavailable_short">Ping unavailable</string>
     <string name="neon_connected_with_ping">Connected • Ping: %1$s</string>

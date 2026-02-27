@@ -68,6 +68,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         private const val DELAY_TEST_MAX_PARALLEL_DEFAULT = 30
         private const val DELAY_TEST_TIMEOUT_MS = 8_000L
         private val DELAY_TEST_PARALLEL_OPTIONS = intArrayOf(20, 30, 40, 50, 60)
+        private const val AUTO_PING_STABILIZATION_MS = 10_000L
     }
 
     private val binding by lazy {
@@ -114,13 +115,17 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private var optimizePulseAnimator: ObjectAnimator? = null
     private var scanlineAnimator: ObjectAnimator? = null
     private var pingLoopJob: Job? = null
+    private var emptyConfigCheckJob: Job? = null
     private var connectTimeoutJob: Job? = null
     private var lastPingText: String? = null
     private var lastPingMillis: Long? = null
     private var pendingConnectAttempt = false
+    private var toggleInProgress = false
+    private var connectAttemptStartedAt = 0L
     private var isGiveConfigsRunning = false
     private var isOptimizeRunning = false
     private var isAutoSwitching = false
+    private var nextAutoPingCheckAtMs: Long = 0L
 
     private data class DelayFilterResult(
         val testedCount: Int,
@@ -207,6 +212,28 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         binding.btnConnect.setOnClickListener {
             lifecycleScope.launch {
                 toggleConnect()
+            }
+        }
+
+        binding.btnNextConfig.setOnClickListener {
+            lifecycleScope.launch {
+                skipToNextConfig()
+            }
+        }
+
+        binding.tvBrandTitle.setOnClickListener {
+            lifecycleScope.launch {
+                if (mainViewModel.isRunning.value == true) {
+                    updateProcessState("درحال تست پینگ واقعی کانفیگ فعال…")
+                    val switched = evaluateServersAndMaybeSwitch(autoSwitch = true)
+                    if (!switched) {
+                        val pingText = lastPingMillis?.let { "${it}ms" }
+                            ?: getString(R.string.neon_ping_unavailable_short)
+                        updateProcessState("تست انجام شد • پینگ فعلی: $pingText • تعداد کانفیگ: ${availableServerCount()}")
+                    }
+                } else {
+                    updateProcessState("اول Connect بزنید، بعد روی Mir2Ray برای تست پینگ کلیک کنید")
+                }
             }
         }
 
@@ -314,9 +341,12 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                 stopConnectPulse()
                 pendingConnectAttempt = false
                 updateProcessState(getString(R.string.neon_connected))
+                binding.btnNextConfig.isVisible = true
                 if (mainViewModel.isRunning.value == true) {
+                    scheduleNextAutoPingCheck(AUTO_PING_STABILIZATION_MS)
                     startPingLoop()
                     lifecycleScope.launch {
+                        delay(4_000)
                         val selectedGuid = MmkvManager.getSelectServer().orEmpty()
                         if (selectedGuid.isNotBlank()) {
                             val delay = withContext(Dispatchers.IO) { measureRealDelayForGuid(selectedGuid) }
@@ -334,6 +364,8 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             } else {
                 connectTimeoutJob?.cancel()
                 connectTimeoutJob = null
+                emptyConfigCheckJob?.cancel()
+                emptyConfigCheckJob = null
                 pingLoopJob?.cancel()
                 pingLoopJob = null
                 binding.fab.setImageResource(R.drawable.ic_play_24dp)
@@ -342,6 +374,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                 setTestState(getString(R.string.connection_not_connected))
                 binding.layoutTest.isFocusable = false
                 binding.btnConnect.text = getString(R.string.neon_connect)
+                binding.btnNextConfig.isVisible = false
                 stopPingLoop()
                 if (pendingConnectAttempt) {
                     updateProcessState(getString(R.string.neon_connect_failed))
@@ -410,6 +443,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     }
 
     private fun restartV2Ray() {
+        scheduleNextAutoPingCheck(AUTO_PING_STABILIZATION_MS)
         if (mainViewModel.isRunning.value == true) {
             V2RayServiceManager.stopVService(this)
         }
@@ -812,16 +846,87 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             }
     }
 
-    private suspend fun toggleConnect() {
-        if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
-            connectTimeoutJob?.cancel()
-            connectTimeoutJob = null
-            pendingConnectAttempt = false
-            stopConnectPulse()
-            binding.pbConnect.isVisible = false
-            V2RayServiceManager.stopVService(this)
-            updateProcessState(getString(R.string.neon_connect_failed))
+    private suspend fun skipToNextConfig() {
+        if (mainViewModel.isRunning.value != true) return
+        if (isAutoSwitching || isGiveConfigsRunning || isOptimizeRunning) return
+
+        val currentGuid = MmkvManager.getSelectServer().orEmpty()
+        if (currentGuid.isBlank()) {
+            updateProcessState("کانفیگ فعلی یافت نشد")
             return
+        }
+
+        binding.btnNextConfig.isEnabled = false
+        updateProcessState("درحال سوییچ به کانفیگ بعدی…")
+
+        try {
+            val nextGuid = withContext(Dispatchers.IO) {
+                mainViewModel.sortByTestResults()
+                findFirstSortedDirectServerGuid(excludeGuid = currentGuid)
+            }
+
+            if (nextGuid.isNullOrBlank()) {
+                updateProcessState("کانفیگ دیگری وجود ندارد؛ نمی‌توان سوییچ کرد")
+                return
+            }
+
+            // Delete current config
+            withContext(Dispatchers.IO) {
+                runCatching { MmkvManager.removeServer(currentGuid) }
+            }
+            mainViewModel.reloadServerList()
+
+            if (availableServerCount() <= 0) {
+                handleEmptyConfigsWhileConnected()
+                return
+            }
+
+            // Switch to next config
+            MmkvManager.setSelectServer(nextGuid)
+            mainViewModel.reloadServerList()
+            updateConfigCountBadge()
+            val nextHost = MmkvManager.decodeServerConfig(nextGuid)?.server.orEmpty()
+            updateProcessState(
+                if (nextHost.isNotBlank()) {
+                    "سوییچ به کانفیگ بعدی: $nextHost • تعداد: ${availableServerCount()}"
+                } else {
+                    "سوییچ به کانفیگ بعدی انجام شد • تعداد: ${availableServerCount()}"
+                }
+            )
+            scheduleNextAutoPingCheck(AUTO_PING_STABILIZATION_MS)
+            restartV2Ray()
+        } finally {
+            binding.btnNextConfig.isEnabled = true
+        }
+    }
+
+    private suspend fun toggleConnect() {
+        if (toggleInProgress) return
+        toggleInProgress = true
+        try {
+            toggleConnectInner()
+        } finally {
+            toggleInProgress = false
+        }
+    }
+
+    private suspend fun toggleConnectInner() {
+        // Cancel pending connect ONLY if enough time has passed (avoid broadcast race)
+        if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
+            val elapsed = System.currentTimeMillis() - connectAttemptStartedAt
+            if (elapsed > 3_000) {
+                connectTimeoutJob?.cancel()
+                connectTimeoutJob = null
+                pendingConnectAttempt = false
+                stopConnectPulse()
+                binding.pbConnect.isVisible = false
+                V2RayServiceManager.stopVService(this)
+                updateProcessState(getString(R.string.neon_connect_failed))
+                return
+            } else {
+                // Too soon — the service may still be starting, ignore this tap
+                return
+            }
         }
 
         if (mainViewModel.isRunning.value == true) {
@@ -855,6 +960,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         }
 
         pendingConnectAttempt = true
+        connectAttemptStartedAt = System.currentTimeMillis()
         binding.pbConnect.isVisible = true
         startConnectPulse()
         updateProcessState(getString(R.string.neon_connecting))
@@ -1216,6 +1322,13 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         val selectedGuid = MmkvManager.getSelectServer().orEmpty()
         if (selectedGuid.isBlank()) return false
 
+        if (autoSwitch) {
+            val now = System.currentTimeMillis()
+            if (now < nextAutoPingCheckAtMs) {
+                return false
+            }
+        }
+
         val currentDelay = withContext(Dispatchers.IO) { measureRealDelayForGuid(selectedGuid) }
 
         lastPingMillis = currentDelay.takeIf { it > 0L }
@@ -1227,22 +1340,47 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             return false
         }
 
-        val currentTooHigh = currentDelay > 500L
-        if (!currentTooHigh) return false
+        val shouldSwitch = isBadDelay(currentDelay)
+        if (!shouldSwitch) return false
+
+        updateProcessState("پینگ اولیه نامناسب بود؛ درحال تایید مجدد…")
+        delay(2_500)
+        val confirmedDelay = withContext(Dispatchers.IO) { measureRealDelayForGuid(selectedGuid) }
+        lastPingMillis = confirmedDelay.takeIf { it > 0L }
+        lastPingText = lastPingMillis?.let { "${it}ms" } ?: getString(R.string.neon_ping_unavailable_short)
+        setTestState(lastPingText ?: getString(R.string.neon_ping_unavailable_short))
+        updateConnectionStateText(mainViewModel.isRunning.value == true)
+
+        if (!isBadDelay(confirmedDelay)) {
+            updateProcessState("پینگ پایدار شد؛ سوییچ انجام نشد • پینگ: ${lastPingText ?: "-"}")
+            return false
+        }
 
         isAutoSwitching = true
         return try {
-            updateProcessState("پینگ ${currentDelay}ms بالای 500 شد؛ حذف کانفیگ فعلی و سوییچ به بعدی…")
+            val switchReason = if (confirmedDelay <= 0L) {
+                "پینگ نامعتبر/timeout"
+            } else {
+                "پینگ ${confirmedDelay}ms بالای 500"
+            }
+            updateProcessState("$switchReason؛ حذف کانفیگ فعلی و سوییچ به بعدی…")
+
+            val nextGuid = withContext(Dispatchers.IO) {
+                mainViewModel.sortByTestResults()
+                findFirstSortedDirectServerGuid(excludeGuid = selectedGuid)
+            }
+
+            if (nextGuid.isNullOrBlank()) {
+                updateProcessState("کانفیگ جایگزین وجود ندارد؛ کانفیگ فعلی نگه داشته شد")
+                return false
+            }
 
             withContext(Dispatchers.IO) {
                 runCatching { MmkvManager.removeServer(selectedGuid) }
-                mainViewModel.sortByTestResults()
             }
             mainViewModel.reloadServerList()
-
-            val nextGuid = findFirstSortedDirectServerGuid(excludeGuid = selectedGuid)
-            if (nextGuid.isNullOrBlank()) {
-                updateProcessState("کانفیگ سالم بعدی وجود ندارد • تعداد کانفیگ: ${availableServerCount()}")
+            if (availableServerCount() <= 0) {
+                handleEmptyConfigsWhileConnected()
                 return false
             }
 
@@ -1256,6 +1394,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
                     "سوییچ به کانفیگ بعدی انجام شد"
                 }
             )
+            scheduleNextAutoPingCheck(AUTO_PING_STABILIZATION_MS)
             restartV2Ray()
             true
         } finally {
@@ -1276,6 +1415,49 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private fun stopPingLoop() {
         pingLoopJob?.cancel()
         pingLoopJob = null
+    }
+
+    private fun handleEmptyConfigsWhileConnected() {
+        if (mainViewModel.isRunning.value != true) return
+        if (availableServerCount() > 0) {
+            emptyConfigCheckJob?.cancel()
+            emptyConfigCheckJob = null
+            return
+        }
+
+        val selectedGuid = MmkvManager.getSelectServer().orEmpty()
+        val hasSelectedConfig = selectedGuid.isNotBlank() && MmkvManager.decodeServerConfig(selectedGuid) != null
+        if (hasSelectedConfig) {
+            return
+        }
+
+        emptyConfigCheckJob?.cancel()
+        emptyConfigCheckJob = lifecycleScope.launch {
+            delay(3_000)
+            if (mainViewModel.isRunning.value != true) return@launch
+            if (availableServerCount() > 0) return@launch
+
+            val stableSelectedGuid = MmkvManager.getSelectServer().orEmpty()
+            val stableHasSelectedConfig =
+                stableSelectedGuid.isNotBlank() && MmkvManager.decodeServerConfig(stableSelectedGuid) != null
+            if (stableHasSelectedConfig) return@launch
+
+            pingLoopJob?.cancel()
+            pingLoopJob = null
+            pendingConnectAttempt = false
+            binding.pbConnect.isVisible = false
+            stopConnectPulse()
+            V2RayServiceManager.stopVService(this@MainActivity)
+            updateProcessState("تعداد کانفیگ: 0 • اتصال قطع شد؛ لطفاً با Give کانفیگ جدید بگیرید")
+        }
+    }
+
+    private fun scheduleNextAutoPingCheck(delayMs: Long) {
+        nextAutoPingCheckAtMs = System.currentTimeMillis() + delayMs
+    }
+
+    private fun isBadDelay(delay: Long): Boolean {
+        return delay <= 0L || delay > 500L
     }
 
     private fun parsePingMillis(result: String?): Long? {

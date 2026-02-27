@@ -64,7 +64,8 @@ class TProxyService(
             Log.i(AppConfig.TAG, "TProxyStartService...")
             TProxyStartService(configFile.absolutePath, vpnInterface.fd)
         } catch (e: Exception) {
-            Log.e(AppConfig.TAG, "HevSocks5Tunnel exception: ${e.message}")
+            Log.e(AppConfig.TAG, "HevSocks5Tunnel exception", e)
+            throw IllegalStateException("Failed to start hev-socks5-tunnel", e)
         }
     }
 

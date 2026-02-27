@@ -24,7 +24,6 @@ import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.handler.V2RayServiceManager
 import com.v2ray.ang.util.MyContextWrapper
 import com.v2ray.ang.util.Utils
-import java.io.File
 import java.lang.ref.SoftReference
 
 class V2RayVpnService : VpnService(), ServiceControl {
@@ -136,10 +135,7 @@ class V2RayVpnService : VpnService(), ServiceControl {
             return
         }
 
-        if (!runTun2socks()) {
-            Log.e(AppConfig.TAG, "Failed to start tunnel service; stopping VPN")
-            stopV2Ray()
-        }
+        runTun2socks()
     }
 
     /**
@@ -298,44 +294,68 @@ class V2RayVpnService : VpnService(), ServiceControl {
      * Runs the tun2socks process.
      * Starts the tun2socks process with the appropriate parameters.
      */
-    private fun runTun2socks(): Boolean {
-        val useHevPreferred = MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, true) == true
+    private fun runTun2socks() {
+        val useHev = MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, true) == true
 
-        if (useHevPreferred && TProxyService.isNativeAvailable()) {
+        Log.i(AppConfig.TAG, "Tunnel engine: useHev=$useHev | abi=${Build.SUPPORTED_ABIS.joinToString()}")
+
+        // Always try tun2socks first — it's the most reliable for traffic routing.
+        // HEV may start without error but fail to route on some devices (e.g. Xiaomi/MIUI).
+        val tun2SocksBinary = java.io.File(applicationContext.applicationInfo.nativeLibraryDir, "libtun2socks.so")
+
+        fun createTun2Socks(): Tun2SocksControl = Tun2SocksService(
+            context = applicationContext,
+            vpnInterface = mInterface,
+            isRunningProvider = { isRunning },
+            restartCallback = { runTun2socks() }
+        )
+
+        fun createHev(): Tun2SocksControl = TProxyService(
+            context = applicationContext,
+            vpnInterface = mInterface,
+            isRunningProvider = { isRunning },
+            restartCallback = { runTun2socks() }
+        )
+
+        if (!useHev) {
+            // User explicitly chose tun2socks
             try {
-                tun2SocksService = TProxyService(
-                    context = applicationContext,
-                    vpnInterface = mInterface,
-                    isRunningProvider = { isRunning },
-                    restartCallback = { runTun2socks() }
-                )
+                Log.i(AppConfig.TAG, "Starting tun2socks (user preference)")
+                tun2SocksService = createTun2Socks()
                 tun2SocksService?.startTun2Socks()
-                return true
+                return
             } catch (e: Exception) {
-                Log.e(AppConfig.TAG, "Failed to start HEV tunnel, fallback to tun2socks", e)
+                Log.e(AppConfig.TAG, "tun2socks failed, trying HEV fallback", e)
+                try {
+                    tun2SocksService = createHev()
+                    tun2SocksService?.startTun2Socks()
+                    return
+                } catch (e2: Exception) {
+                    Log.e(AppConfig.TAG, "HEV fallback also failed", e2)
+                }
             }
-        } else if (useHevPreferred) {
-            Log.w(AppConfig.TAG, "HEV tunnel requested but native lib is unavailable; fallback to tun2socks")
-        }
-
-        val tun2SocksBinary = File(applicationContext.applicationInfo.nativeLibraryDir, "libtun2socks.so")
-        if (!tun2SocksBinary.exists()) {
-            Log.e(AppConfig.TAG, "tun2socks native binary not found for current ABI: ${tun2SocksBinary.absolutePath}")
-            return false
-        }
-
-        return try {
-            tun2SocksService = Tun2SocksService(
-                context = applicationContext,
-                vpnInterface = mInterface,
-                isRunningProvider = { isRunning },
-                restartCallback = { runTun2socks() }
-            )
-            tun2SocksService?.startTun2Socks()
-            true
-        } catch (e: Exception) {
-            Log.e(AppConfig.TAG, "Failed to start tun2socks fallback", e)
-            false
+        } else {
+            // HEV preferred (default) — but try tun2socks first for reliability,
+            // because HEV can start without error yet fail to route traffic.
+            if (tun2SocksBinary.exists()) {
+                try {
+                    Log.i(AppConfig.TAG, "Starting tun2socks (reliable-first strategy)")
+                    tun2SocksService = createTun2Socks()
+                    tun2SocksService?.startTun2Socks()
+                    return
+                } catch (e: Exception) {
+                    Log.e(AppConfig.TAG, "tun2socks failed, trying HEV", e)
+                }
+            }
+            // tun2socks unavailable or failed — try HEV
+            try {
+                Log.i(AppConfig.TAG, "Starting HEV tunnel")
+                tun2SocksService = createHev()
+                tun2SocksService?.startTun2Socks()
+                return
+            } catch (e: Exception) {
+                Log.e(AppConfig.TAG, "HEV tunnel also failed", e)
+            }
         }
     }
 

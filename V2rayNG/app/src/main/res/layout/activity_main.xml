@@ -203,6 +203,20 @@
                         android:textColor="@color/neon_green"
                         android:textSize="14sp" />
 
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_next_config"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="14dp"
+                        android:text="@string/neon_next_config"
+                        android:textAllCaps="false"
+                        android:textColor="@color/neon_green"
+                        android:textSize="13sp"
+                        android:visibility="gone"
+                        app:strokeColor="@color/neon_green"
+                        app:strokeWidth="1dp" />
+
                     <Space
                         android:layout_width="match_parent"
                         android:layout_height="0dp"

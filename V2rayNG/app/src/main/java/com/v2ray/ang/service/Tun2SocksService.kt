@@ -81,6 +81,7 @@ class Tun2SocksService(
             sendFd()
         } catch (e: Exception) {
             Log.e(AppConfig.TAG, "Failed to start $TUN2SOCKS process", e)
+            throw IllegalStateException("Unable to start $TUN2SOCKS", e)
         }
     }
 

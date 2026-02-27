@@ -17,6 +17,22 @@ A V2Ray client for Android, support [Xray core](https://github.com/XTLS/Xray-cor
 - x86_64 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86_64.apk
 - x86 APK: https://github.com/desmondep/Mir2Ray/releases/latest/download/v2rayNG_1.10.32-fdroid_x86.apk
 
+### راهنمای فارسی (نسخه نهایی)
+
+#### هشدار امنیتی هنگام نصب APK
+- اگر فایل را خارج از Google Play نصب کنید، پیام Play Protect یا اسکن امنیتی نمایش داده می‌شود.
+- این رفتار در اندروید طبیعی است و الزاماً به معنی آلوده بودن برنامه نیست.
+- پیشنهاد می‌شود فقط از Release رسمی همین ریپو دانلود کنید و SHA256 فایل را قبل از نصب بررسی کنید.
+
+#### قابلیت جدید موتور تست Delay
+- برای انتخاب تعداد تست موازی، روی دکمه `Optimize` نگه‌دارید (Long Press).
+- گزینه‌های قابل انتخاب: `20`، `30`، `40`، `50`، `60`.
+- مقدار انتخاب‌شده ذخیره می‌شود و در هر دو مسیر `Give New Configs` و `Optimize` اعمال می‌گردد.
+
+#### نکته عملکردی پیشنهادی
+- مقدار `30` پیش‌فرض امن و پایدار است.
+- مقادیر بالاتر روی دستگاه‌های ضعیف یا شبکه ناپایدار می‌تواند باعث timeout بیشتر و نوسان نتیجه شود.
+
 ### Latest local build artifacts
 - V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_universal.apk
 - V2rayNG/app/build/outputs/apk/fdroid/debug/v2rayNG_1.10.32-fdroid_arm64-v8a.apk

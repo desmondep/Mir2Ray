@@ -24,6 +24,7 @@ import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.handler.V2RayServiceManager
 import com.v2ray.ang.util.MyContextWrapper
 import com.v2ray.ang.util.Utils
+import java.io.File
 import java.lang.ref.SoftReference
 
 class V2RayVpnService : VpnService(), ServiceControl {
@@ -315,6 +316,12 @@ class V2RayVpnService : VpnService(), ServiceControl {
             }
         } else if (useHevPreferred) {
             Log.w(AppConfig.TAG, "HEV tunnel requested but native lib is unavailable; fallback to tun2socks")
+        }
+
+        val tun2SocksBinary = File(applicationContext.applicationInfo.nativeLibraryDir, "libtun2socks.so")
+        if (!tun2SocksBinary.exists()) {
+            Log.e(AppConfig.TAG, "tun2socks native binary not found for current ABI: ${tun2SocksBinary.absolutePath}")
+            return false
         }
 
         return try {

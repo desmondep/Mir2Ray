@@ -61,6 +61,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedListener {
@@ -69,6 +70,9 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         private const val DELAY_TEST_TIMEOUT_MS = 8_000L
         private val DELAY_TEST_PARALLEL_OPTIONS = intArrayOf(20, 30, 40, 50, 60)
         private const val AUTO_PING_STABILIZATION_MS = 10_000L
+        private const val CONNECT_TIMEOUT_MS = 15_000L
+        private const val CONNECT_TIMEOUT_THRESHOLD_MS = 3_000L
+        private const val TAG = "MainActivity"
     }
 
     private val binding by lazy {
@@ -78,17 +82,13 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private val adapter by lazy { MainRecyclerAdapter(this) }
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) {
+            Log.d(TAG, "VPN permission granted")
             if (!startV2Ray()) {
-                pendingConnectAttempt = false
-                binding.pbConnect.isVisible = false
-                stopConnectPulse()
-                updateProcessState(getString(R.string.neon_connect_failed))
+                cleanupFailedConnectAttempt("VPN service failed to start")
             }
         } else {
-            pendingConnectAttempt = false
-            binding.pbConnect.isVisible = false
-            stopConnectPulse()
-            updateProcessState(getString(R.string.neon_connect_failed))
+            Log.w(TAG, "VPN permission denied by user")
+            cleanupFailedConnectAttempt("VPN permission denied by user")
         }
     }
     private val requestSubSettingActivity = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -120,7 +120,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private var lastPingText: String? = null
     private var lastPingMillis: Long? = null
     private var pendingConnectAttempt = false
-    private var toggleInProgress = false
+    private val toggleInProgress = AtomicBoolean(false)  // Thread-safe alternative to boolean
     private var connectAttemptStartedAt = 0L
     private var isGiveConfigsRunning = false
     private var isOptimizeRunning = false
@@ -431,13 +431,12 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
 
     private fun startV2Ray(): Boolean {
         if (MmkvManager.getSelectServer().isNullOrEmpty()) {
+            Log.w(TAG, "No server selected for connection")
             toast(R.string.title_file_chooser)
-            pendingConnectAttempt = false
-            binding.pbConnect.isVisible = false
-            stopConnectPulse()
-            updateProcessState(getString(R.string.neon_connect_failed))
+            cleanupFailedConnectAttempt("No server selected")
             return false
         }
+        Log.d(TAG, "Starting V2Ray service")
         V2RayServiceManager.startVService(this)
         return true
     }
@@ -901,35 +900,64 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     }
 
     private suspend fun toggleConnect() {
-        if (toggleInProgress) return
-        toggleInProgress = true
+        // Use compareAndSet for safe, atomic operation
+        if (!toggleInProgress.compareAndSet(false, true)) {
+            Log.d(TAG, "Connect toggle already in progress, ignoring click")
+            return
+        }
+
         try {
             toggleConnectInner()
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error in toggleConnect", e)
+            cleanupFailedConnectAttempt("Unexpected error: ${e.message}")
         } finally {
-            toggleInProgress = false
+            toggleInProgress.set(false)
         }
     }
 
+    /**
+     * Helper function to clean up failed connection attempts
+     */
+    private fun cleanupFailedConnectAttempt(reason: String) {
+        Log.w(TAG, "Connection attempt failed: $reason")
+        pendingConnectAttempt = false
+        binding.pbConnect.isVisible = false
+        stopConnectPulse()
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = null
+        updateProcessState(getString(R.string.neon_connect_failed))
+    }
+
     private suspend fun toggleConnectInner() {
-        // Cancel pending connect ONLY if enough time has passed (avoid broadcast race)
+        Log.d(TAG, "toggleConnectInner called - isRunning: ${mainViewModel.isRunning.value}, pendingConnect: $pendingConnectAttempt")
+
+        // If we have a pending connection and service is not running, handle it
         if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
             val elapsed = System.currentTimeMillis() - connectAttemptStartedAt
-            if (elapsed > 3_000) {
-                connectTimeoutJob?.cancel()
-                connectTimeoutJob = null
-                pendingConnectAttempt = false
-                stopConnectPulse()
-                binding.pbConnect.isVisible = false
-                V2RayServiceManager.stopVService(this)
-                updateProcessState(getString(R.string.neon_connect_failed))
-                return
+            Log.d(TAG, "Pending connect detected. Elapsed: ${elapsed}ms, threshold: ${CONNECT_TIMEOUT_THRESHOLD_MS}ms")
+
+            return if (elapsed > CONNECT_TIMEOUT_THRESHOLD_MS) {
+                // Enough time has passed → connection failed, clean up and retry
+                Log.w(TAG, "Connection timeout after ${elapsed}ms, attempting fallback")
+                cleanupFailedConnectAttempt("Connection timeout - retrying with next server")
+                
+                // Try next server automatically
+                if (availableServerCount() > 1) {
+                    lifecycleScope.launch {
+                        delay(500)
+                        skipToNextConfig()
+                    }
+                }
             } else {
-                // Too soon — the service may still be starting, ignore this tap
-                return
+                // Too soon → service may still be starting, wait a bit more
+                Log.d(TAG, "Too early to determine failure, waiting for service startup")
             }
         }
 
+        // If already connected → disconnect
         if (mainViewModel.isRunning.value == true) {
+            Log.d(TAG, "Service is running, disconnecting...")
             connectTimeoutJob?.cancel()
             connectTimeoutJob = null
             pingLoopJob?.cancel()
@@ -942,48 +970,66 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             return
         }
 
+        // No configs available
         val availableCount = availableServerCount()
         if (availableCount <= 0) {
+            Log.w(TAG, "No available servers to connect to")
             updateProcessState("تعداد کانفیگ: 0 • لیست خالیه؛ لطفاً روی Give بزنید")
             return
         }
 
+        // Find and select best server
         val firstSortedGuid = findFirstSortedDirectServerGuid()
         if (!firstSortedGuid.isNullOrBlank()) {
             MmkvManager.setSelectServer(firstSortedGuid)
             mainViewModel.reloadServerList()
             val selectedHost = MmkvManager.decodeServerConfig(firstSortedGuid)?.server.orEmpty()
             if (selectedHost.isNotBlank()) {
+                Log.i(TAG, "Selected server: $selectedHost (${availableCount} total)")
                 updateProcessState("درحال اتصال به: $selectedHost • تعداد کانفیگ: $availableCount")
-                Log.i(AppConfig.TAG, "Selected connect server host: $selectedHost")
+            } else {
+                Log.i(TAG, "Selected server (no hostname available)")
             }
         }
 
+        // Mark connection attempt as pending
         pendingConnectAttempt = true
         connectAttemptStartedAt = System.currentTimeMillis()
         binding.pbConnect.isVisible = true
         startConnectPulse()
         updateProcessState(getString(R.string.neon_connecting))
+
+        // Set timeout for connection attempt
         connectTimeoutJob?.cancel()
         connectTimeoutJob = lifecycleScope.launch {
-            delay(15_000)
+            delay(CONNECT_TIMEOUT_MS)
             if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
-                pendingConnectAttempt = false
-                binding.pbConnect.isVisible = false
-                stopConnectPulse()
-                updateProcessState(getString(R.string.neon_connect_failed))
+                Log.e(TAG, "Connection timeout after ${CONNECT_TIMEOUT_MS}ms")
+                cleanupFailedConnectAttempt("Connection timeout - server not responding")
             }
         }
 
-        if ((MmkvManager.decodeSettingsString(AppConfig.PREF_MODE) ?: VPN) == VPN) {
+        // Request VPN permission if needed, then start service
+        val mode = MmkvManager.decodeSettingsString(AppConfig.PREF_MODE) ?: VPN
+        if (mode == VPN) {
             val intent = VpnService.prepare(this)
             if (intent == null) {
-                if (!startV2Ray()) return
+                // VPN permission already granted
+                Log.d(TAG, "VPN already permitted, starting service directly")
+                if (!startV2Ray()) {
+                    cleanupFailedConnectAttempt("Failed to start V2Ray service")
+                }
             } else {
+                // Need to request VPN permission
+                Log.d(TAG, "Requesting VPN permission from user")
                 requestVpnPermission.launch(intent)
             }
         } else {
-            if (!startV2Ray()) return
+            // Non-VPN mode
+            Log.d(TAG, "Starting in non-VPN mode")
+            if (!startV2Ray()) {
+                cleanupFailedConnectAttempt("Failed to start V2Ray service")
+            }
         }
     }
 
@@ -998,679 +1044,3 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         val success = try {
             withContext(Dispatchers.IO) {
                 try {
-                    withContext(Dispatchers.Main) {
-                        updateProcessState("مرحله ۱/۴: دریافت کانفیگ‌ها…")
-                    }
-                    MmkvManager.removeAllServer()
-                    mainViewModel.reloadServerList()
-                    runOnUiThread { updateGiveProgress(8) }
-
-                    val fetched = HttpUtil.getUrlContentWithUserAgent(fixedSubscriptionUrl, null)
-                    val normalized = normalizeConfigRows(fetched)
-                    if (normalized.isBlank()) {
-                        return@withContext false
-                    }
-                    val importedCount = normalized.lineSequence().count { it.isNotBlank() }
-                    runOnUiThread { updateGiveProgress(20) }
-
-                    AngConfigManager.importBatchConfig(normalized, "", true)
-                    mainViewModel.reloadServerList()
-                    runOnUiThread { updateGiveProgress(35) }
-
-                    val beforeDedup = MmkvManager.decodeServerList().size
-
-                    withContext(Dispatchers.Main) {
-                        updateProcessState("مرحله ۲/۴: حذف تکراری‌ها…")
-                    }
-                    mainViewModel.removeDuplicateServer()
-                    mainViewModel.reloadServerList()
-                    val afterDedup = MmkvManager.decodeServerList().size
-                    val duplicateRemoved = (beforeDedup - afterDedup).coerceAtLeast(0)
-                    runOnUiThread { updateGiveProgress(45) }
-
-                    withContext(Dispatchers.Main) {
-                        updateProcessState("مرحله ۳/۴: تست تاخیر واقعی…")
-                    }
-                    val filterResult = removeSlowAndInvalidServers { done, total ->
-                        if (total > 0) {
-                            val percent = 45 + (done * 35 / total)
-                            runOnUiThread { updateGiveProgress(percent) }
-                        }
-                    }
-                    withContext(Dispatchers.Main) {
-                        updateProcessState(
-                            "مرحله ۴/۴: Imported=$importedCount | DuplicateRemoved=$duplicateRemoved | Tested=${filterResult.testedCount} | RemovedBad=${filterResult.removedCount} | Good=${filterResult.goodCount}"
-                        )
-                    }
-                    mainViewModel.sortByTestResults()
-                    mainViewModel.reloadServerList()
-                    runOnUiThread { updateGiveProgress(85) }
-
-                    val bestGuid = findBestDirectServerGuid()
-                    if (!bestGuid.isNullOrBlank()) {
-                        MmkvManager.setSelectServer(bestGuid)
-                    }
-                    mainViewModel.reloadServerList()
-                    runOnUiThread { updateGiveProgress(100) }
-                    !bestGuid.isNullOrBlank()
-                } catch (e: Exception) {
-                    Log.e(AppConfig.TAG, "Failed in Give New Configs flow", e)
-                    false
-                }
-            }
-        } finally {
-            binding.pbWaiting.hide()
-            setGiveConfigsLoading(false)
-            isGiveConfigsRunning = false
-        }
-
-        if (success) {
-            updateProcessState("${getString(R.string.neon_ready_configs)} • تعداد کانفیگ: ${availableServerCount()}")
-        } else {
-            updateProcessState(getString(R.string.neon_failed_configs))
-            toastError(R.string.toast_failure)
-        }
-    }
-
-    private suspend fun processOptimizeConfigs(autoTriggered: Boolean = false): Boolean {
-        if (isOptimizeRunning) return false
-        isOptimizeRunning = true
-        val optimizeStartedAt = System.currentTimeMillis()
-        Log.i(AppConfig.TAG, "OPTIMIZE_BENCH start autoTriggered=$autoTriggered")
-        if (!autoTriggered) {
-            setOptimizeLoading(true)
-            updateOptimizeProgress(0)
-            binding.pbWaiting.show()
-        }
-        updateProcessState(getString(R.string.neon_optimizing))
-
-        val success = try {
-            withContext(Dispatchers.IO) {
-                try {
-                    withContext(Dispatchers.Main) {
-                        updateProcessState("مرحله ۱/۴: آماده‌سازی بهینه‌سازی…")
-                    }
-                    val beforeDedup = MmkvManager.decodeServerList()
-                        .count { guid ->
-                            val cfg = MmkvManager.decodeServerConfig(guid)
-                            cfg != null && cfg.configType != EConfigType.CUSTOM
-                        }
-                    mainViewModel.removeDuplicateServer()
-                    mainViewModel.reloadServerList()
-                    val afterDedup = MmkvManager.decodeServerList()
-                        .count { guid ->
-                            val cfg = MmkvManager.decodeServerConfig(guid)
-                            cfg != null && cfg.configType != EConfigType.CUSTOM
-                        }
-                    val duplicateRemoved = (beforeDedup - afterDedup).coerceAtLeast(0)
-                    if (!autoTriggered) {
-                        runOnUiThread { updateOptimizeProgress(15) }
-                    }
-                    withContext(Dispatchers.Main) {
-                        updateProcessState("مرحله ۲/۴: تست تاخیر واقعی…")
-                    }
-                    val filterResult = removeSlowAndInvalidServers { done, total ->
-                        if (!autoTriggered && total > 0) {
-                            val percent = 15 + (done * 60 / total)
-                            runOnUiThread { updateOptimizeProgress(percent) }
-                        }
-                    }
-                    withContext(Dispatchers.Main) {
-                        updateProcessState(
-                            "مرحله ۳/۴: DuplicateRemoved=$duplicateRemoved | Tested=${filterResult.testedCount} | RemovedBad=${filterResult.removedCount} | Good=${filterResult.goodCount}"
-                        )
-                    }
-                    mainViewModel.sortByTestResults()
-                    mainViewModel.reloadServerList()
-                    if (!autoTriggered) {
-                        runOnUiThread { updateOptimizeProgress(82) }
-                    }
-
-                    val bestGuid = findBestDirectServerGuid()
-                    if (!bestGuid.isNullOrBlank()) {
-                        MmkvManager.setSelectServer(bestGuid)
-                    }
-                    mainViewModel.reloadServerList()
-                    if (!autoTriggered) {
-                        runOnUiThread { updateOptimizeProgress(100) }
-                    }
-                    withContext(Dispatchers.Main) {
-                        updateProcessState("مرحله ۴/۴: بهینه‌سازی کامل شد")
-                    }
-                    !bestGuid.isNullOrBlank()
-                } catch (e: Exception) {
-                    Log.e(AppConfig.TAG, "Failed in Optimize flow", e)
-                    false
-                }
-            }
-        } finally {
-            if (!autoTriggered) {
-                binding.pbWaiting.hide()
-                setOptimizeLoading(false)
-            }
-            isOptimizeRunning = false
-        }
-
-        if (success) {
-            updateProcessState("${getString(R.string.neon_optimized_ready)} • تعداد کانفیگ: ${availableServerCount()}")
-        } else {
-            updateProcessState(getString(R.string.neon_failed_configs))
-            if (!autoTriggered) {
-                toastError(R.string.toast_failure)
-            }
-        }
-        val optimizeElapsedMs = System.currentTimeMillis() - optimizeStartedAt
-        Log.i(AppConfig.TAG, "OPTIMIZE_BENCH end success=$success autoTriggered=$autoTriggered elapsedMs=$optimizeElapsedMs")
-        return success
-    }
-
-    private suspend fun removeSlowAndInvalidServers(): DelayFilterResult {
-        return removeSlowAndInvalidServers(null)
-    }
-
-    private suspend fun removeSlowAndInvalidServers(onProgress: ((done: Int, total: Int) -> Unit)?): DelayFilterResult {
-        mainViewModel.reloadServerList()
-        val candidates = mainViewModel.serversCache
-            .filter { it.profile.configType != EConfigType.CUSTOM }
-            .map { it.guid }
-            .toList()
-
-        if (candidates.isEmpty()) {
-            return DelayFilterResult(testedCount = 0, removedCount = 0, goodCount = 0)
-        }
-
-        val removeList = mutableListOf<String>()
-        val measuredDelay = measureDelaysInBatches(candidates, onProgress)
-        measuredDelay.forEach { (guid, delay) ->
-            if (delay < 0L || delay > 500L) {
-                removeList.add(guid)
-            }
-        }
-
-        if (removeList.size >= candidates.size && candidates.isNotEmpty()) {
-            val keepGuid = measuredDelay
-                .filterValues { it > 0L }
-                .minByOrNull { it.value }
-                ?.key
-                ?: candidates.first()
-            removeList.remove(keepGuid)
-        }
-
-        removeList.forEach { MmkvManager.removeServer(it) }
-        val goodCount = (candidates.size - removeList.size).coerceAtLeast(0)
-        return DelayFilterResult(
-            testedCount = candidates.size,
-            removedCount = removeList.size,
-            goodCount = goodCount
-        )
-    }
-
-    private fun measureRealDelayForGuid(guid: String): Long {
-        val config = MmkvManager.decodeServerConfig(guid) ?: return -1L
-        return if (config.configType == EConfigType.HYSTERIA2) {
-            PluginServiceManager.realPingHy2(this, config)
-        } else {
-            val configResult = V2rayConfigManager.getV2rayConfig4Speedtest(this, guid)
-            if (!configResult.status) {
-                -1L
-            } else {
-                SpeedtestManager.realPing(configResult.content)
-            }
-        }
-    }
-
-    private fun normalizeConfigRows(content: String): String {
-        if (content.isBlank()) {
-            return ""
-        }
-        val pattern = Regex("(vmess|vless|trojan|ss|socks|wireguard|hysteria2|hy2)://[^\\s]+")
-        val links = pattern.findAll(content).map { it.value.trim() }.toList()
-        return if (links.isEmpty()) content else links.joinToString("\n")
-    }
-
-    private fun findBestDirectServerGuid(excludeGuid: String? = null): String? {
-        return MmkvManager.decodeServerList()
-            .asSequence()
-            .filter { it != excludeGuid }
-            .filter { guid ->
-                val cfg = MmkvManager.decodeServerConfig(guid)
-                cfg != null && cfg.configType != EConfigType.CUSTOM
-            }
-            .sortedBy { directServerDelayScore(it) }
-            .firstOrNull()
-    }
-
-    private fun findFirstSortedDirectServerGuid(excludeGuid: String? = null): String? {
-        return MmkvManager.decodeServerList()
-            .asSequence()
-            .filter { it != excludeGuid }
-            .filter { guid ->
-                val cfg = MmkvManager.decodeServerConfig(guid)
-                cfg != null && cfg.configType != EConfigType.CUSTOM
-            }
-            .firstOrNull()
-    }
-
-    private data class DirectServerEvaluation(
-        val bestGuid: String?,
-        val delayByGuid: Map<String, Long>
-    )
-
-    private suspend fun selectFastestDirectServerGuid(): String? {
-        return evaluateDirectServers().bestGuid
-    }
-
-    private suspend fun evaluateDirectServers(): DirectServerEvaluation = withContext(Dispatchers.IO) {
-        val candidates = MmkvManager.decodeServerList()
-            .mapNotNull { guid ->
-                val cfg = MmkvManager.decodeServerConfig(guid) ?: return@mapNotNull null
-                if (cfg.configType == EConfigType.CUSTOM) return@mapNotNull null
-                guid
-            }
-
-        if (candidates.isEmpty()) {
-            return@withContext DirectServerEvaluation(null, emptyMap())
-        }
-
-        val delayMap = measureDelaysInBatches(candidates, null)
-
-        val bestByFreshDelay = delayMap
-            .filterValues { it > 0L }
-            .minByOrNull { it.value }
-            ?.key
-        val fallback = candidates.minByOrNull { directServerDelayScore(it) }
-        DirectServerEvaluation(bestByFreshDelay ?: fallback, delayMap)
-    }
-
-    private fun directServerDelayScore(guid: String): Long {
-        val delay = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: Long.MAX_VALUE
-        return if (delay > 0L) delay else Long.MAX_VALUE
-    }
-
-    private suspend fun measureDelaysInBatches(
-        candidates: List<String>,
-        onProgress: ((done: Int, total: Int) -> Unit)?
-    ): MutableMap<String, Long> {
-        val delayMap = mutableMapOf<String, Long>()
-        val processedCount = AtomicInteger(0)
-        val total = candidates.size
-
-        val selectedParallel = getDelayTestParallel()
-        val semaphore = Semaphore(selectedParallel)
-        coroutineScope {
-            candidates.map { guid ->
-                async(Dispatchers.IO) {
-                    semaphore.withPermit {
-                        val delay = withTimeoutOrNull(DELAY_TEST_TIMEOUT_MS) {
-                            measureRealDelayForGuid(guid)
-                        } ?: -1L
-                        MmkvManager.encodeServerTestDelayMillis(guid, delay)
-                        synchronized(delayMap) {
-                            delayMap[guid] = delay
-                        }
-                        val done = processedCount.incrementAndGet()
-                        onProgress?.invoke(done, total)
-                    }
-                }
-            }.awaitAll()
-        }
-        return delayMap
-    }
-
-    private suspend fun evaluateServersAndMaybeSwitch(autoSwitch: Boolean): Boolean {
-        if (isGiveConfigsRunning || isOptimizeRunning || pendingConnectAttempt || isAutoSwitching) return false
-        val selectedGuid = MmkvManager.getSelectServer().orEmpty()
-        if (selectedGuid.isBlank()) return false
-
-        if (autoSwitch) {
-            val now = System.currentTimeMillis()
-            if (now < nextAutoPingCheckAtMs) {
-                return false
-            }
-        }
-
-        val currentDelay = withContext(Dispatchers.IO) { measureRealDelayForGuid(selectedGuid) }
-
-        lastPingMillis = currentDelay.takeIf { it > 0L }
-        lastPingText = lastPingMillis?.let { "${it}ms" } ?: getString(R.string.neon_ping_unavailable_short)
-        setTestState(lastPingText ?: getString(R.string.neon_ping_unavailable_short))
-        updateConnectionStateText(mainViewModel.isRunning.value == true)
-
-        if (!autoSwitch || mainViewModel.isRunning.value != true) {
-            return false
-        }
-
-        val shouldSwitch = isBadDelay(currentDelay)
-        if (!shouldSwitch) return false
-
-        updateProcessState("پینگ اولیه نامناسب بود؛ درحال تایید مجدد…")
-        delay(2_500)
-        val confirmedDelay = withContext(Dispatchers.IO) { measureRealDelayForGuid(selectedGuid) }
-        lastPingMillis = confirmedDelay.takeIf { it > 0L }
-        lastPingText = lastPingMillis?.let { "${it}ms" } ?: getString(R.string.neon_ping_unavailable_short)
-        setTestState(lastPingText ?: getString(R.string.neon_ping_unavailable_short))
-        updateConnectionStateText(mainViewModel.isRunning.value == true)
-
-        if (!isBadDelay(confirmedDelay)) {
-            updateProcessState("پینگ پایدار شد؛ سوییچ انجام نشد • پینگ: ${lastPingText ?: "-"}")
-            return false
-        }
-
-        isAutoSwitching = true
-        return try {
-            val switchReason = if (confirmedDelay <= 0L) {
-                "پینگ نامعتبر/timeout"
-            } else {
-                "پینگ ${confirmedDelay}ms بالای 500"
-            }
-            updateProcessState("$switchReason؛ سوییچ به کانفیگ بعدی…")
-
-            // Mark current config with a bad delay score so it's deprioritized
-            withContext(Dispatchers.IO) {
-                MmkvManager.encodeServerTestDelayMillis(selectedGuid, 99999L)
-            }
-
-            val nextGuid = withContext(Dispatchers.IO) {
-                mainViewModel.sortByTestResults()
-                findFirstSortedDirectServerGuid(excludeGuid = selectedGuid)
-            }
-
-            if (nextGuid.isNullOrBlank()) {
-                updateProcessState("کانفیگ جایگزین وجود ندارد؛ کانفیگ فعلی نگه داشته شد")
-                return false
-            }
-
-            MmkvManager.setSelectServer(nextGuid)
-            mainViewModel.reloadServerList()
-            val nextHost = MmkvManager.decodeServerConfig(nextGuid)?.server.orEmpty()
-            updateProcessState(
-                if (nextHost.isNotBlank()) {
-                    "سوییچ به کانفیگ بعدی: $nextHost"
-                } else {
-                    "سوییچ به کانفیگ بعدی انجام شد"
-                }
-            )
-            scheduleNextAutoPingCheck(AUTO_PING_STABILIZATION_MS)
-            restartV2Ray()
-            true
-        } finally {
-            isAutoSwitching = false
-        }
-    }
-
-    private fun startPingLoop() {
-        stopPingLoop()
-        pingLoopJob = lifecycleScope.launch {
-            while (isActive && mainViewModel.isRunning.value == true) {
-                evaluateServersAndMaybeSwitch(autoSwitch = true)
-                delay(12_000)
-            }
-        }
-    }
-
-    private fun stopPingLoop() {
-        pingLoopJob?.cancel()
-        pingLoopJob = null
-    }
-
-    private fun handleEmptyConfigsWhileConnected() {
-        if (mainViewModel.isRunning.value != true) return
-        if (availableServerCount() > 0) {
-            emptyConfigCheckJob?.cancel()
-            emptyConfigCheckJob = null
-            return
-        }
-
-        val selectedGuid = MmkvManager.getSelectServer().orEmpty()
-        val hasSelectedConfig = selectedGuid.isNotBlank() && MmkvManager.decodeServerConfig(selectedGuid) != null
-        if (hasSelectedConfig) {
-            return
-        }
-
-        emptyConfigCheckJob?.cancel()
-        emptyConfigCheckJob = lifecycleScope.launch {
-            delay(3_000)
-            if (mainViewModel.isRunning.value != true) return@launch
-            if (availableServerCount() > 0) return@launch
-
-            val stableSelectedGuid = MmkvManager.getSelectServer().orEmpty()
-            val stableHasSelectedConfig =
-                stableSelectedGuid.isNotBlank() && MmkvManager.decodeServerConfig(stableSelectedGuid) != null
-            if (stableHasSelectedConfig) return@launch
-
-            pingLoopJob?.cancel()
-            pingLoopJob = null
-            pendingConnectAttempt = false
-            binding.pbConnect.isVisible = false
-            stopConnectPulse()
-            V2RayServiceManager.stopVService(this@MainActivity)
-            updateProcessState("تعداد کانفیگ: 0 • اتصال قطع شد؛ لطفاً با Give کانفیگ جدید بگیرید")
-        }
-    }
-
-    private fun scheduleNextAutoPingCheck(delayMs: Long) {
-        nextAutoPingCheckAtMs = System.currentTimeMillis() + delayMs
-    }
-
-    private fun isBadDelay(delay: Long): Boolean {
-        return delay <= 0L || delay > 500L
-    }
-
-    private fun parsePingMillis(result: String?): Long? {
-        if (result.isNullOrBlank()) return null
-        val lower = result.lowercase()
-        if (lower.contains("fail") || lower.contains("unavailable") || lower.contains("error")) {
-            return null
-        }
-        return Regex("(\\d+)\\s*ms", RegexOption.IGNORE_CASE)
-            .find(result)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toLongOrNull()
-    }
-
-    private fun isPingErrorText(result: String?): Boolean {
-        if (result.isNullOrBlank()) return true
-        val lower = result.lowercase()
-        return lower.contains("fail") || lower.contains("error") || lower.contains("unavailable")
-    }
-
-    private fun updateProcessState(message: String) {
-        binding.tvProcessState.text = message
-        updateConfigCountBadge()
-    }
-
-    private fun updateConfigCountBadge() {
-        binding.tvConfigCountBadge.text = "Configs: ${availableServerCount()}"
-    }
-
-    private fun updateConnectionStateText(isConnected: Boolean) {
-        val pingText = lastPingText?.takeIf { it.isNotBlank() } ?: getString(R.string.neon_ping_unknown)
-        binding.tvConnectionState.text = if (isConnected) {
-            getString(R.string.neon_connected_with_ping, pingText)
-        } else {
-            getString(R.string.neon_disconnected)
-        }
-    }
-
-    private fun startConnectPulse() {
-        stopConnectPulse()
-        connectPulseAnimator = ObjectAnimator.ofPropertyValuesHolder(
-            binding.btnConnect,
-            PropertyValuesHolder.ofFloat("scaleX", 1f, 1.04f, 1f),
-            PropertyValuesHolder.ofFloat("scaleY", 1f, 1.04f, 1f)
-        ).apply {
-            duration = 900
-            repeatCount = ObjectAnimator.INFINITE
-            start()
-        }
-    }
-
-    private fun startButtonPulse(button: MaterialButton): ObjectAnimator {
-        return ObjectAnimator.ofPropertyValuesHolder(
-            button,
-            PropertyValuesHolder.ofFloat("scaleX", 1f, 1.04f, 1f),
-            PropertyValuesHolder.ofFloat("scaleY", 1f, 1.04f, 1f)
-        ).apply {
-            duration = 900
-            repeatCount = ObjectAnimator.INFINITE
-            start()
-        }
-    }
-
-    private fun stopButtonPulse(button: MaterialButton, animator: ObjectAnimator?) {
-        animator?.cancel()
-        button.scaleX = 1f
-        button.scaleY = 1f
-        button.isEnabled = true
-    }
-
-    private fun setGiveConfigsLoading(isLoading: Boolean) {
-        if (isLoading) {
-            binding.btnGiveConfigs.isEnabled = false
-            binding.pbGiveProgress.isVisible = true
-            giveConfigsPulseAnimator?.cancel()
-            giveConfigsPulseAnimator = startButtonPulse(binding.btnGiveConfigs)
-        } else {
-            stopButtonPulse(binding.btnGiveConfigs, giveConfigsPulseAnimator)
-            giveConfigsPulseAnimator = null
-            binding.pbGiveProgress.isVisible = false
-            binding.pbGiveProgress.progress = 0
-        }
-    }
-
-    private fun setOptimizeLoading(isLoading: Boolean) {
-        if (isLoading) {
-            binding.btnOptimize.isEnabled = false
-            binding.pbOptimizeProgress.isVisible = true
-            optimizePulseAnimator?.cancel()
-            optimizePulseAnimator = startButtonPulse(binding.btnOptimize)
-        } else {
-            stopButtonPulse(binding.btnOptimize, optimizePulseAnimator)
-            optimizePulseAnimator = null
-            binding.pbOptimizeProgress.isVisible = false
-            binding.pbOptimizeProgress.progress = 0
-        }
-    }
-
-    private fun updateGiveProgress(percent: Int) {
-        val value = percent.coerceIn(0, 100)
-        if (!binding.pbGiveProgress.isVisible) {
-            binding.pbGiveProgress.isVisible = true
-        }
-        binding.pbGiveProgress.setProgressCompat(value, true)
-    }
-
-    private fun updateOptimizeProgress(percent: Int) {
-        val value = percent.coerceIn(0, 100)
-        if (!binding.pbOptimizeProgress.isVisible) {
-            binding.pbOptimizeProgress.isVisible = true
-        }
-        binding.pbOptimizeProgress.setProgressCompat(value, true)
-    }
-
-    private fun stopConnectPulse() {
-        connectPulseAnimator?.cancel()
-        connectPulseAnimator = null
-        binding.btnConnect.scaleX = 1f
-        binding.btnConnect.scaleY = 1f
-    }
-
-    private fun startScanlineEffect() {
-        scanlineAnimator = ObjectAnimator.ofFloat(binding.scanlineOverlay, "translationY", -120f, 120f).apply {
-            duration = 2200
-            repeatCount = ObjectAnimator.INFINITE
-            repeatMode = ObjectAnimator.RESTART
-            start()
-        }
-    }
-
-    /**
-     * show file chooser
-     */
-    private fun showFileChooser() {
-        val intent = Intent(Intent.ACTION_GET_CONTENT)
-        intent.type = "*/*"
-        intent.addCategory(Intent.CATEGORY_OPENABLE)
-
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-
-        if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
-            pendingAction = Action.READ_CONTENT_FROM_URI
-            chooseFileForCustomConfig.launch(Intent.createChooser(intent, getString(R.string.title_file_chooser)))
-        } else {
-            requestPermissionLauncher.launch(permission)
-        }
-    }
-
-    /**
-     * read content from uri
-     */
-    private fun readContentFromUri(uri: Uri) {
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-
-        if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
-            try {
-                contentResolver.openInputStream(uri).use { input ->
-                    importBatchConfig(input?.bufferedReader()?.readText())
-                }
-            } catch (e: Exception) {
-                Log.e(AppConfig.TAG, "Failed to read content from URI", e)
-            }
-        } else {
-            requestPermissionLauncher.launch(permission)
-        }
-    }
-
-    private fun setTestState(content: String?) {
-        binding.tvTestState.text = content
-    }
-
-//    val mConnection = object : ServiceConnection {
-//        override fun onServiceDisconnected(name: ComponentName?) {
-//        }
-//
-//        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-//            sendMsg(AppConfig.MSG_REGISTER_CLIENT, "")
-//        }
-//    }
-
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B) {
-            moveTaskToBack(false)
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
-    }
-
-
-    override fun onNavigationItemSelected(item: MenuItem): Boolean {
-        // Handle navigation view item clicks here.
-        when (item.itemId) {
-            R.id.sub_setting -> requestSubSettingActivity.launch(Intent(this, SubSettingActivity::class.java))
-            R.id.per_app_proxy_settings -> startActivity(Intent(this, PerAppProxyActivity::class.java))
-            R.id.routing_setting -> requestSubSettingActivity.launch(Intent(this, RoutingSettingActivity::class.java))
-            R.id.user_asset_setting -> startActivity(Intent(this, UserAssetActivity::class.java))
-            R.id.settings -> startActivity(
-                Intent(this, SettingsActivity::class.java)
-                    .putExtra("isRunning", mainViewModel.isRunning.value == true)
-            )
-
-            R.id.promotion -> Utils.openUri(this, "${Utils.decode(AppConfig.APP_PROMOTION_URL)}?t=${System.currentTimeMillis()}")
-            R.id.logcat -> startActivity(Intent(this, LogcatActivity::class.java))
-            R.id.check_for_update -> startActivity(Intent(this, CheckUpdateActivity::class.java))
-            R.id.about -> startActivity(Intent(this, AboutActivity::class.java))
-        }
-
-        binding.drawerLayout.closeDrawer(GravityCompat.START)
-        return true
-    }
-}

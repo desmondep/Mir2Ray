@@ -71,8 +71,6 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         private val DELAY_TEST_PARALLEL_OPTIONS = intArrayOf(20, 30, 40, 50, 60)
         private const val AUTO_PING_STABILIZATION_MS = 10_000L
         private const val CONNECT_TIMEOUT_MS = 15_000L
-        private const val CONNECT_TIMEOUT_THRESHOLD_MS = 3_000L
-        private const val TAG = "MainActivity"
     }
 
     private val binding by lazy {
@@ -82,13 +80,9 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private val adapter by lazy { MainRecyclerAdapter(this) }
     private val requestVpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) {
-            Log.d(TAG, "VPN permission granted")
-            if (!startV2Ray()) {
-                cleanupFailedConnectAttempt("VPN service failed to start")
-            }
+            startV2Ray()
         } else {
-            Log.w(TAG, "VPN permission denied by user")
-            cleanupFailedConnectAttempt("VPN permission denied by user")
+            updateProcessState(getString(R.string.neon_connect_failed))
         }
     }
     private val requestSubSettingActivity = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -120,7 +114,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private var lastPingText: String? = null
     private var lastPingMillis: Long? = null
     private var pendingConnectAttempt = false
-    private val toggleInProgress = AtomicBoolean(false)  // Thread-safe alternative to boolean
+    private val toggleInProgress = AtomicBoolean(false)
     private var connectAttemptStartedAt = 0L
     private var isGiveConfigsRunning = false
     private var isOptimizeRunning = false
@@ -431,12 +425,10 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
 
     private fun startV2Ray(): Boolean {
         if (MmkvManager.getSelectServer().isNullOrEmpty()) {
-            Log.w(TAG, "No server selected for connection")
             toast(R.string.title_file_chooser)
-            cleanupFailedConnectAttempt("No server selected")
+            updateProcessState(getString(R.string.neon_connect_failed))
             return false
         }
-        Log.d(TAG, "Starting V2Ray service")
         V2RayServiceManager.startVService(this)
         return true
     }
@@ -902,62 +894,19 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
     private suspend fun toggleConnect() {
         // Use compareAndSet for safe, atomic operation
         if (!toggleInProgress.compareAndSet(false, true)) {
-            Log.d(TAG, "Connect toggle already in progress, ignoring click")
             return
         }
 
         try {
             toggleConnectInner()
-        } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error in toggleConnect", e)
-            cleanupFailedConnectAttempt("Unexpected error: ${e.message}")
         } finally {
             toggleInProgress.set(false)
         }
     }
 
-    /**
-     * Helper function to clean up failed connection attempts
-     */
-    private fun cleanupFailedConnectAttempt(reason: String) {
-        Log.w(TAG, "Connection attempt failed: $reason")
-        pendingConnectAttempt = false
-        binding.pbConnect.isVisible = false
-        stopConnectPulse()
-        connectTimeoutJob?.cancel()
-        connectTimeoutJob = null
-        updateProcessState(getString(R.string.neon_connect_failed))
-    }
-
     private suspend fun toggleConnectInner() {
-        Log.d(TAG, "toggleConnectInner called - isRunning: ${mainViewModel.isRunning.value}, pendingConnect: $pendingConnectAttempt")
-
-        // If we have a pending connection and service is not running, handle it
-        if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
-            val elapsed = System.currentTimeMillis() - connectAttemptStartedAt
-            Log.d(TAG, "Pending connect detected. Elapsed: ${elapsed}ms, threshold: ${CONNECT_TIMEOUT_THRESHOLD_MS}ms")
-
-            return if (elapsed > CONNECT_TIMEOUT_THRESHOLD_MS) {
-                // Enough time has passed → connection failed, clean up and retry
-                Log.w(TAG, "Connection timeout after ${elapsed}ms, attempting fallback")
-                cleanupFailedConnectAttempt("Connection timeout - retrying with next server")
-                
-                // Try next server automatically
-                if (availableServerCount() > 1) {
-                    lifecycleScope.launch {
-                        delay(500)
-                        skipToNextConfig()
-                    }
-                }
-            } else {
-                // Too soon → service may still be starting, wait a bit more
-                Log.d(TAG, "Too early to determine failure, waiting for service startup")
-            }
-        }
-
         // If already connected → disconnect
         if (mainViewModel.isRunning.value == true) {
-            Log.d(TAG, "Service is running, disconnecting...")
             connectTimeoutJob?.cancel()
             connectTimeoutJob = null
             pingLoopJob?.cancel()
@@ -973,7 +922,6 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         // No configs available
         val availableCount = availableServerCount()
         if (availableCount <= 0) {
-            Log.w(TAG, "No available servers to connect to")
             updateProcessState("تعداد کانفیگ: 0 • لیست خالیه؛ لطفاً روی Give بزنید")
             return
         }
@@ -985,10 +933,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             mainViewModel.reloadServerList()
             val selectedHost = MmkvManager.decodeServerConfig(firstSortedGuid)?.server.orEmpty()
             if (selectedHost.isNotBlank()) {
-                Log.i(TAG, "Selected server: $selectedHost (${availableCount} total)")
                 updateProcessState("درحال اتصال به: $selectedHost • تعداد کانفیگ: $availableCount")
-            } else {
-                Log.i(TAG, "Selected server (no hostname available)")
             }
         }
 
@@ -1004,8 +949,7 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
         connectTimeoutJob = lifecycleScope.launch {
             delay(CONNECT_TIMEOUT_MS)
             if (pendingConnectAttempt && mainViewModel.isRunning.value != true) {
-                Log.e(TAG, "Connection timeout after ${CONNECT_TIMEOUT_MS}ms")
-                cleanupFailedConnectAttempt("Connection timeout - server not responding")
+                updateProcessState(getString(R.string.neon_connect_failed))
             }
         }
 
@@ -1015,21 +959,14 @@ class MainActivity : BaseActivity(), NavigationView.OnNavigationItemSelectedList
             val intent = VpnService.prepare(this)
             if (intent == null) {
                 // VPN permission already granted
-                Log.d(TAG, "VPN already permitted, starting service directly")
-                if (!startV2Ray()) {
-                    cleanupFailedConnectAttempt("Failed to start V2Ray service")
-                }
+                startV2Ray()
             } else {
                 // Need to request VPN permission
-                Log.d(TAG, "Requesting VPN permission from user")
                 requestVpnPermission.launch(intent)
             }
         } else {
             // Non-VPN mode
-            Log.d(TAG, "Starting in non-VPN mode")
-            if (!startV2Ray()) {
-                cleanupFailedConnectAttempt("Failed to start V2Ray service")
-            }
+            startV2Ray()
         }
     }
 
